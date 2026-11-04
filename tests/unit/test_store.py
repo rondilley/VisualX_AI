@@ -107,37 +107,37 @@ def test_cache_scrub_keeps_other_users(tmp_path):
 
 def test_delete_by_post_and_user_in_store(tmp_path):
     _, store, cache, _ = make_env(tmp_path)
-    store.set_meta("ego_user_id", "ego")
+    store.set_meta("ego_user_id", "100")
     store.put_interactions([
-        interaction("reply", "u1", "ego", spost="p1", tpost="p0", at="2026-10-01T00:00:00Z",
-                    text="see https://x.com/u2/status/p2"),
-        interaction("quote", "u2", "ego", spost="p2", tpost="p0", at="2026-10-02T00:00:00Z"),
-        interaction("mention", "u2", "u1", spost="p2", at="2026-10-02T00:00:00Z"),
+        interaction("reply", "101", "100", spost="901", tpost="900", at="2026-10-01T00:00:00Z",
+                    text="see https://x.com/u2/status/902"),
+        interaction("quote", "102", "100", spost="902", tpost="900", at="2026-10-02T00:00:00Z"),
+        interaction("mention", "102", "101", spost="902", at="2026-10-02T00:00:00Z"),
     ])
-    store.put_profiles([profile("u1", handle="one"), profile("u2", handle="two")])
-    store.put_post({"id": "p2", "author_id": "u2", "text": "quote"}, "test", "r1")
-    rep = delete_ids(store, cache, tmp_path / "config", ["p2"], "post")
+    store.put_profiles([profile("101", handle="one"), profile("102", handle="two")])
+    store.put_post({"id": "902", "author_id": "102", "text": "quote"}, "test", "r1")
+    rep = delete_ids(store, cache, tmp_path / "config", ["902"], "post")
     assert rep.remaining == []
-    assert rep.redacted_cells == 1  # the URL in the reply text by u1
-    assert {i["source_post_id"] for i in store.interactions()} == {"p1"}
-    rep = delete_ids(store, cache, tmp_path / "config", ["u1"], "user")
+    assert rep.redacted_cells == 1  # the URL in the reply text by 101
+    assert {i["source_post_id"] for i in store.interactions()} == {"901"}
+    rep = delete_ids(store, cache, tmp_path / "config", ["101"], "user")
     assert rep.remaining == []
     assert store.interactions() == []
-    assert set(store.profiles()) == {"u2"}
+    assert set(store.profiles()) == {"102"}
     with pytest.raises(ValueError):
-        delete_ids(store, cache, tmp_path / "config", ["ego"], "user")
+        delete_ids(store, cache, tmp_path / "config", ["100"], "user")
 
 
 def test_delete_removes_override_entry(tmp_path):
     _, store, cache, _ = make_env(tmp_path)
-    store.set_meta("ego_user_id", "ego")
+    store.set_meta("ego_user_id", "100")
     (tmp_path / "config" / "overrides.yaml").write_text(
-        'overrides:\n  - {user_id: "u7", state: no_signals, note: n}\n  - {user_id: "u8", state: some_signals}\n',
+        'overrides:\n  - {user_id: "107", state: no_signals, note: n}\n  - {user_id: "108", state: some_signals}\n',
         encoding="utf-8")
-    rep = delete_ids(store, cache, tmp_path / "config", ["u7"], "user")
+    rep = delete_ids(store, cache, tmp_path / "config", ["107"], "user")
     assert rep.overrides_removed == 1
     cfg2 = load(tmp_path / "config", root=tmp_path)
-    assert [o["user_id"] for o in cfg2.overrides] == ["u8"]
+    assert [o["user_id"] for o in cfg2.overrides] == ["108"]
 
 
 def test_cache_retention(tmp_path):
@@ -177,3 +177,194 @@ def test_config_rejects_bad_color(tmp_path):
         '[render.state_colors]\nmany_signals = "red; background:url(x)"\n', encoding="utf-8")
     with pytest.raises(ConfigError):
         load(tmp_path / "config", root=tmp_path)
+
+
+# -- Review 20261103: deletion defects A-01, A-02, A-03 and log IDs A-05 --
+
+
+def _snapshot_meta(store):
+    return {r["key"]: r["value"] for r in store.q("SELECT key, value FROM meta")}
+
+
+@pytest.mark.parametrize("bad", ["", " ", "%", "12_34", "h:", "h:bad handle", "1" * 26, "../x"])
+def test_delete_refuses_a_malformed_id_and_changes_nothing(tmp_path, bad):
+    # A-01: an empty ID matched each row with LIKE '%%' and the redaction regex
+    # put "[deleted]" between the characters of each JSON cell.
+    _, store, cache, _ = make_env(tmp_path)
+    store.set_meta("ego_user_id", "100")
+    store.put_profiles([profile("101", handle="one")])
+    store.put_interactions([interaction("reply", "101", "100", spost="901", tpost="900", at="2026-10-01T00:00:00Z")])
+    before = (_snapshot_meta(store), store.interactions(), store.profiles())
+    for kind in ("user", "post"):
+        with pytest.raises(ValueError, match="not a valid"):
+            delete_ids(store, cache, tmp_path / "config", [bad], kind)
+    assert (_snapshot_meta(store), store.interactions(), store.profiles()) == before
+
+
+def test_delete_refuses_an_empty_id_list_and_empty_patterns(tmp_path):
+    from visualx.cache import _id_pattern
+
+    _, store, cache, _ = make_env(tmp_path)
+    with pytest.raises(ValueError):
+        delete_ids(store, cache, tmp_path / "config", [], "user")
+    with pytest.raises(ValueError):
+        _id_pattern({""})
+    with pytest.raises(ValueError):
+        cache.scrub({""})
+
+
+def test_delete_accepts_provisional_user_ids_but_not_provisional_post_ids(tmp_path):
+    _, store, cache, _ = make_env(tmp_path)
+    store.set_meta("ego_user_id", "100")
+    rep = delete_ids(store, cache, tmp_path / "config", ["h:some_handle"], "user")
+    assert rep.remaining == []
+    with pytest.raises(ValueError):
+        delete_ids(store, cache, tmp_path / "config", ["h:some_handle"], "post")
+
+
+def test_delete_of_two_seed_users_removes_their_cursor_rows(tmp_path):
+    # A-02: step 6 keeps one cursor row for each seed, keyed by the user ID. The
+    # redaction rewrote both rows to (6, "[deleted]") and the second one collided.
+    _, store, cache, _ = make_env(tmp_path)
+    store.set_meta("ego_user_id", "100")
+    for u in ("201", "202"):
+        store.put_profiles([profile(u, handle=f"seed{u}")])
+        store.set_cursor(6, u, f"tok{u}", False, "r1")
+    store.set_cursor(1, "100", None, True, "r1")
+    rep = delete_ids(store, cache, tmp_path / "config", ["201", "202"], "user")
+    assert rep.remaining == []
+    assert [(r["step"], r["item"]) for r in store.q("SELECT step, item FROM cursor ORDER BY step")] == [(1, "100")]
+
+
+def test_cache_scrub_finds_an_id_that_occurs_only_inside_a_string(tmp_path):
+    # A-03: a Grok response names a post only in a status URL (citations and model
+    # text). The cache_ids index has no entry for it, so the scrub skipped the
+    # file and the delete could not complete.
+    _, store, cache, _ = make_env(tmp_path)
+    store.set_meta("ego_user_id", "100")
+    body = {"output_text": "see https://x.com/someone/status/1850000000000000001 here",
+            "citations": ["https://x.com/i/status/1850000000000000001", "https://x.com/i/status/1850000000000000002"]}
+    rh = request_hash("POST /v1/responses", {"q": "w1"})
+    cache.put(rh, "POST /v1/responses", body)
+    assert cache.files_with({"1850000000000000001"}) == []  # not in the ID-key index
+    rep = delete_ids(store, cache, tmp_path / "config", ["1850000000000000001"], "post")
+    assert rep.remaining == []
+    assert rep.cache_files_scrubbed == 1
+    kept = cache.get(rh)
+    assert "1850000000000000001" not in json.dumps(kept)
+    assert kept["citations"][1] == "https://x.com/i/status/1850000000000000002"
+
+
+def test_log_hashes_since_id_and_pagination_tokens():
+    # A-05: since_id holds the post ID of another user (steps 2 and 6).
+    from visualx.logs import NullLog
+
+    log = NullLog()
+    log.write("x_api_call", params={"since_id": "1999999999999999999", "until_id": "1888888888888888888",
+                                    "pagination_token": "abc", "max_results": 100})
+    rec = log.records[0]["params"]
+    assert "1999999999999999999" not in json.dumps(rec) and "1888888888888888888" not in json.dumps(rec)
+    assert rec["pagination_token"] != "abc" and rec["max_results"] == 100
+
+
+def test_config_refuses_billed_expansions(tmp_path):
+    # A-08 (review 20261103): X gives no maximum for "includes", so the plan
+    # cannot reserve the maximum cost of a call with this setting.
+    make_env(tmp_path)
+    local = tmp_path / "config" / "visualx.local.toml"
+    local.write_text(local.read_text(encoding="utf-8") + "\n[billing_assumptions]\nexpansions_billed = true\n",
+                     encoding="utf-8")
+    with pytest.raises(ConfigError, match="expansions_billed"):
+        load(tmp_path / "config", root=tmp_path)
+
+
+def test_drop_text_keeps_the_domains_when_it_runs_two_times(tmp_path):
+    # A-11 (review 20261103): the second run parsed the stored hosts as URLs and
+    # removed them, so the domain rules lost their input.
+    _, store, cache, _ = make_env(tmp_path)
+    store.put_interactions([interaction("reply", "101", "100", spost="901", tpost="900", at="2026-10-01T00:00:00Z",
+                                        text="see https://deals.example/p/1",
+                                        urls=["https://deals.example/p/1", "https://www.other.example/x?y=1"])])
+    assert store.drop_text() == 1
+    first = store.interactions()[0]
+    assert first["text"] is None and first["urls"] == ["deals.example", "www.other.example"]
+    assert first["field_status"]["urls"] == "present" and first["field_status"]["url_paths"] == "absent"
+    store.drop_text()
+    again = store.interactions()[0]
+    assert again["urls"] == first["urls"] and again["field_status"] == first["field_status"]
+
+
+def test_cache_drop_text_removes_post_text_and_keeps_ids(tmp_path):
+    # A-12 (review 20261103): retain_text = false left the text in the raw cache.
+    _, store, cache, _ = make_env(tmp_path)
+    rh = request_hash("GET /2/users", {"ids": "111,222,333"})
+    cache.put(rh, "GET /2/users", _batch_body())
+    cache.put(request_hash("xai", {}), "xai", {"output_text": "model text", "citations": ["https://x.com/i/status/9"]})
+    assert cache.drop_text() == 2
+    body = cache.get(rh)
+    assert "post by B" not in json.dumps(body)
+    assert all("text" not in tw for tw in body["includes"]["tweets"])
+    assert [t["id"] for t in body["includes"]["tweets"]] == ["9001", "9002"]
+    assert cache.drop_text() == 0
+
+
+def test_user_delete_also_removes_the_handle(tmp_path):
+    # A-13 (review 20261103): a Grok cache file that names the user only by handle,
+    # and a reply by another user that mentions the handle, kept the handle.
+    _, store, cache, _ = make_env(tmp_path)
+    store.set_meta("ego_user_id", "100")
+    store.set_meta("ego_handle", "owner")
+    store.put_profiles([profile("101", handle="victim_acct"), profile("102", handle="bystander")])
+    store.put_interactions([
+        interaction("reply", "102", "100", spost="902", tpost="900", at="2026-10-01T00:00:00Z",
+                    text="thanks @Victim_Acct and see https://x.com/victim_acct/status/5"),
+        interaction("mention", "h:victim_acct", "100", spost="903", at="2026-10-02T00:00:00Z"),
+    ])
+    cache.put(request_hash("xai", {"w": 1}), "xai", {
+        "items": [{"author_handle": "victim_acct", "type": "mention"}, {"author_handle": "bystander"}],
+        "citations": ["https://x.com/victim_acct/status/1850000000000000009"]})
+    rep = delete_ids(store, cache, tmp_path / "config", ["101"], "user")
+    assert rep.remaining == []
+    assert "h:victim_acct" not in {i["source_user_id"] for i in store.interactions()}
+    reply = store.interactions()[0]
+    assert "victim_acct" not in reply["text"].casefold() and "thanks [deleted]" in reply["text"]
+    body = cache.get(request_hash("xai", {"w": 1}))
+    assert "victim_acct" not in json.dumps(body).casefold()
+    assert body["items"][1]["author_handle"] == "bystander"
+    # A word equal to a short handle in ordinary text is not changed.
+    assert "bystander" in json.dumps(body)
+
+
+def test_rekey_user_moves_the_snapshot_finding_and_calibration_rows(tmp_path):
+    # A-14 (review 20261103): rows under h:<handle> stayed after the rekey, and a
+    # later delete by the X user ID did not find them.
+    _, store, cache, _ = make_env(tmp_path)
+    store.set_meta("ego_user_id", "100")
+    old, new = "h:late_joiner", "104"
+    c = store.conn
+    c.execute("INSERT INTO snapshot_nodes(snapshot_id,user_id,state) VALUES ('s1',?, 'no_signals')", (old,))
+    c.execute("INSERT INTO snapshot_findings VALUES ('s1','lookalike','info',?)", (json.dumps([old, "100"]),))
+    c.execute("INSERT INTO findings VALUES ('f1','lookalike','t','info','s',?,?,'r')",
+              (json.dumps([old, "100"]), json.dumps({"lookalike": old})))
+    c.execute("INSERT INTO calibration_samples VALUES ('c1','b1',?,'x','no_signals','[]','[]',1,'r','t')", (old,))
+    c.execute("INSERT INTO profile_history VALUES (?, 't1', 'late_joiner', NULL, NULL, NULL)", (old,))
+    store.rekey_user(old, new)
+    for t, col in (("snapshot_nodes", "user_id"), ("snapshot_findings", "members_json"), ("findings", "members_json"),
+                   ("findings", "evidence_json"), ("calibration_samples", "user_id"), ("profile_history", "user_id")):
+        vals = [r[0] for r in c.execute(f"SELECT {col} FROM {t}").fetchall()]
+        assert vals and all(old not in v for v in vals) and any(new in v for v in vals), (t, col, vals)
+    rep = delete_ids(store, cache, tmp_path / "config", [new], "user")
+    assert rep.remaining == []
+    assert c.execute("SELECT COUNT(*) FROM snapshot_nodes").fetchone()[0] == 0
+
+
+def test_log_hashes_other_x_id_keys_and_long_numbers():
+    # B-27 (review 20261103): the list of ID keys was a list of exact names.
+    log = NullLog()
+    log.write("e", quoted_post_id="1850000000000000001", note="1850000000000000002", run_id="run_x",
+              reset="1793000000", counts={"seed_ids": ["2002", "2005"]}, page_size=100)
+    rec = json.dumps(log.records[0])
+    for raw in ("1850000000000000001", "1850000000000000002", '"2002"', '"2005"'):
+        assert raw not in rec
+    r = log.records[0]
+    assert r["run_id"] == "run_x" and r["reset"] == "1793000000" and r["page_size"] == 100

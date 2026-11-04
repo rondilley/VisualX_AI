@@ -30,6 +30,8 @@ from typing import Any
 import igraph as ig
 import leidenalg
 
+from .score.engine import SENSITIVE_TERMS, sensitive_hits
+
 # TR-06: no topic for politics, religion, health, ethnicity, sexuality, or trade-union
 # membership. A topic name or a keyword that matches one of these words is refused.
 SENSITIVE_WORDS = re.compile(
@@ -40,6 +42,16 @@ SENSITIVE_WORDS = re.compile(
     r"trans|pride|union\w*)\b",
     re.IGNORECASE,
 )
+
+
+
+def _sensitive(text: str) -> bool:
+    """TR-06: the word list of this module (with word stems) or the term list of the rule engine.
+
+    One check for topics and rules, so the two lists cannot drift apart (review 20261103, B-22).
+    """
+    return bool(SENSITIVE_WORDS.search(text)) or bool(sensitive_hits(text))
+
 
 GROUP_DEFAULTS: dict[str, Any] = {
     "resolution": 1.0,
@@ -75,7 +87,7 @@ def check_topics(topics: Any) -> dict[str, list[re.Pattern[str]]]:
         name = str(name)
         if not re.fullmatch(r"[a-z0-9_]{1,30}", name):
             raise TopicError(f"topic name {name!r} must be 1 to 30 characters of a-z, 0-9, and _")
-        if SENSITIVE_WORDS.search(name.replace("_", " ")):
+        if _sensitive(name.replace("_", " ")):
             raise TopicError(f"topic {name!r} names a sensitive category (TR-06)")
         if not isinstance(words, list) or not words:
             raise TopicError(f"topic {name!r} must have a list of keywords")
@@ -84,14 +96,20 @@ def check_topics(topics: Any) -> dict[str, list[re.Pattern[str]]]:
             w = str(w)
             if w.startswith("re:"):
                 body = w[3:]
-                if SENSITIVE_WORDS.search(body):
+                if _sensitive(body):
                     raise TopicError(f"topic {name!r}: the pattern {body!r} names a sensitive category (TR-06)")
                 try:
-                    pats.append(re.compile(body, re.IGNORECASE))
+                    pat = re.compile(body, re.IGNORECASE)
                 except re.error as e:
                     raise TopicError(f"topic {name!r}: bad pattern {body!r}: {e}") from e
+                # A pattern can hide a term from the word check ("rel[i]gion"). So the
+                # pattern must also not match any listed term (review 20261103, B-22).
+                hit = next((term for terms in SENSITIVE_TERMS.values() for term in terms if pat.search(term)), None)
+                if hit is not None:
+                    raise TopicError(f"topic {name!r}: the pattern {body!r} matches the sensitive term {hit!r} (TR-06)")
+                pats.append(pat)
             else:
-                if SENSITIVE_WORDS.search(w):
+                if _sensitive(w):
                     raise TopicError(f"topic {name!r}: the keyword {w!r} names a sensitive category (TR-06)")
                 pats.append(re.compile(r"(?<![\w#@])" + re.escape(w) + r"(?!\w)", re.IGNORECASE))
         out[name] = pats

@@ -50,6 +50,9 @@ _NUMERIC_SEGMENT = re.compile(r"(?<=.)/(\d+)(?=/|$)")
 
 HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 SERVER_RETRIES = 3
+# Network errors before the request leaves this computer. Only these are safe to
+# send again: X did not get the request, so it did not bill it.
+_NOT_SENT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 MAX_RATE_LIMIT_WAIT = 3600.0
 MAX_RATE_LIMIT_HITS = 20
 
@@ -169,6 +172,15 @@ class XApiClient:
             try:
                 r = self._send(url, params, token)
             except httpx.HTTPError as e:
+                if not isinstance(e, _NOT_SENT_ERRORS):
+                    # The request may have reached X, and X may bill it. A retry would
+                    # be a second billed call under one reservation (review 20261103,
+                    # A-07). The plan keeps the reservation in the ledger, and the
+                    # cursor stays, so the next run continues from this page.
+                    self._log("x_api_network_error", endpoint=template, id=path_ids, status=None,
+                              error=type(e).__name__, step=step)
+                    raise XApiError(f"{template}: network error after the request was sent ({type(e).__name__}); "
+                                    "not retried, because X can bill it") from e
                 server_tries += 1
                 self._log("x_api_retry", endpoint=template, id=path_ids, status=None, error=type(e).__name__, attempt=server_tries, step=step)
                 if server_tries > SERVER_RETRIES:

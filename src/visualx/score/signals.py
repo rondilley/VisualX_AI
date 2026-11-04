@@ -27,10 +27,8 @@ from urllib.parse import urlsplit
 
 from ..model import INTERACTION_OPTIONAL_FIELDS, INTERACTION_TYPES, PROFILE_OPTIONAL_FIELDS, normalize_text
 from .skeleton import (
-    edit_distance,
     lookalike_grade,
     lookalike_match,
-    match_keys,
     mixed_script_token,
 )
 
@@ -385,13 +383,23 @@ def max_duplicate_replies(inp: Inputs, params: dict[str, Any]) -> Value:
 
     Two replies are in one group if their normalized text is equal, or if the
     Jaccard similarity of their word shingles is at or above ``jaccard``.
+
+    Equal texts are one group before the comparison. The near pairs come from a
+    prefix-filter index: two sets with Jaccard at or above t share at least one
+    of the first ``len - ceil(t * len) + 1`` items of each set in one global
+    order (rare items first). The result is the same as a comparison of each
+    pair, without the n^2 work on many replies (review 20261103, B-12).
     """
     replies = inp.own("text", types=("reply",))
     norms = [n for n in (normalize_text(i["text"]) for i in replies) if n]
     k = int(params.get("shingle_words", 3))
     limit = float(params.get("jaccard", 1.0))
-    sh = [_shingles(n.split(), k) for n in norms]
-    parent = list(range(len(norms)))
+    count: dict[str, int] = {}
+    for n in norms:
+        count[n] = count.get(n, 0) + 1
+    texts = sorted(count)
+    sh = [_shingles(n.split(), k) for n in texts]
+    parent = list(range(len(texts)))
 
     def find(x: int) -> int:
         while parent[x] != x:
@@ -399,21 +407,32 @@ def max_duplicate_replies(inp: Inputs, params: dict[str, Any]) -> Value:
             x = parent[x]
         return x
 
-    for a in range(len(norms)):
-        for b in range(a + 1, len(norms)):
-            if find(a) == find(b):
-                continue
-            same = norms[a] == norms[b]
-            if not same:
+    if 0 < limit <= 1:
+        freq: dict[tuple[str, ...], int] = {}
+        for s in sh:
+            for g in s:
+                freq[g] = freq.get(g, 0) + 1
+        index: dict[tuple[str, ...], list[int]] = {}
+        for a, s in enumerate(sh):
+            ordered = sorted(s, key=lambda g: (freq[g], g))
+            prefix = ordered[: len(ordered) - math.ceil(limit * len(ordered)) + 1]
+            cands: set[int] = set()
+            for g in prefix:
+                cands.update(index.get(g, ()))
+                index.setdefault(g, []).append(a)
+            for b in cands:
+                if find(a) == find(b):
+                    continue
+                small, big = sorted((len(sh[a]), len(sh[b])))
+                if big == 0 or small / big < limit:
+                    continue  # the Jaccard value cannot reach the limit
                 inter = len(sh[a] & sh[b])
-                union = len(sh[a] | sh[b])
-                same = union > 0 and inter / union >= limit
-            if same:
-                parent[find(b)] = find(a)
+                if inter / (len(sh[a]) + len(sh[b]) - inter) >= limit:
+                    parent[find(b)] = find(a)
     sizes: dict[int, int] = {}
-    for x in range(len(norms)):
+    for x in range(len(texts)):
         r = find(x)
-        sizes[r] = sizes.get(r, 0) + 1
+        sizes[r] = sizes.get(r, 0) + count[texts[x]]
     return Value(max(sizes.values(), default=0))
 
 
@@ -444,21 +463,22 @@ def max_replies_to_ego_in_window(inp: Inputs, params: dict[str, Any]) -> Value:
 def _any_source(inp: Inputs, checks: list[Callable[[], tuple[int, str | None]]]) -> tuple[str | None, list[str]]:
     """Run each source check. Returns (first hit, missing fields).
 
-    A check returns (items examined, hit). If all sources are missing, or no
-    item was examined and one source is missing, the input is missing.
+    A check returns (items examined, hit). A hit in any source fires the rule.
+    With no hit, a missing source makes the input missing: the source that is
+    not there could have the hit, so "did not fire" would be a made-up result
+    (invariant 10, review 20261103, B-07). Before, the rule gave "did not fire"
+    when one other source was examined.
     """
     missing: list[str] = []
-    examined = 0
     for check in checks:
         try:
-            n, hit = check()
+            _n, hit = check()
         except MissingInput as e:
             missing.extend(e.fields)
             continue
-        examined += n
         if hit is not None:
             return hit, missing
-    if missing and examined == 0:
+    if missing:
         raise MissingInput(*missing)
     return None, missing
 
@@ -556,12 +576,23 @@ def ai_authorship_phrase(inp: Inputs, params: dict[str, Any]) -> Value:
 # ---------------------------------------------------------------------------
 
 
-@signal(profile=("handle", "name"), context=("ego_user_id", "ego_handle", "ego_name"))
+@signal(profile=("handle", "name", "created_at"), context=("ego_user_id", "ego_handle", "ego_name"))
 def impersonates_ego(inp: Inputs, params: dict[str, Any]) -> Value:
-    """I01: the name or handle looks like the ego (UTS #39 skeleton), or the handle is near the ego handle.
+    """I01: the account looks like the owner account, with the strong test only (hard rule).
 
-    The user ID must be different from the ego. The display name is used when
-    the profile has it; the handle is a required input.
+    I01 is a hard rule: it gives ``many_signals`` alone. So it must not fire for
+    a different person who has a near handle or the same name (review 20261103,
+    B-01). The test is ``skeleton.lookalike_match`` against the owner:
+
+    - ``handle_skeleton`` (the handle looks the same as the owner handle, for
+      example a changed separator or a confusable letter) fires at any age.
+    - A display name that looks like the owner name or handle, or a near handle,
+      fires only if ``lookalike_grade`` gives "high" and the account is younger
+      than ``young_account_days``. An old account with the same name is often a
+      second person with that name. The lookalike detector still reports it.
+
+    ``created_at`` is optional: without it, the account counts as not young.
+    The user ID must be different from the owner.
     """
     ego_id = inp.context("ego_user_id")
     ego_handle = str(inp.context("ego_handle")).lstrip("@")
@@ -569,20 +600,20 @@ def impersonates_ego(inp: Inputs, params: dict[str, Any]) -> Value:
     fields = {"ego_handle": ego_handle}
     if inp.user_id == ego_id:
         return Value(False, {**fields, "match": ""})
-    mine = set(match_keys(handle))
-    if inp.present("name"):
-        mine |= match_keys(str(inp.profile("name")))
-    ego_keys = set(match_keys(ego_handle))
+    name = str(inp.profile("name")) if inp.present("name") else None
     ego_name = inp.context("ego_name", required=False)
-    if ego_name:
-        ego_keys |= match_keys(str(ego_name))
-    mine.discard("")
-    ego_keys.discard("")
-    if mine & ego_keys:
-        return Value(True, {**fields, "match": "skeleton"})
-    dist = edit_distance(handle.casefold(), ego_handle.casefold())
-    if dist <= int(params["max_handle_edit_distance"]):
-        return Value(True, {**fields, "match": "edit_distance"})
+    m = lookalike_match(handle, name, ego_handle, str(ego_name) if ego_name else None, params)
+    if m is None:
+        return Value(False, {**fields, "match": ""})
+    kind = m[0]
+    if kind == "handle_skeleton":
+        return Value(True, {**fields, "match": kind})
+    created = parse_time(inp.profile("created_at"), "created_at") if inp.present("created_at") else None
+    age = _days(created, inp.fetched_at()) if created is not None else None
+    young = age is not None and age < float(params["young_account_days"])
+    grade = lookalike_grade(kind, name, str(ego_name) if ego_name else None, age, True, params)
+    if young and grade == "high":
+        return Value(True, {**fields, "match": kind})
     return Value(False, {**fields, "match": ""})
 
 

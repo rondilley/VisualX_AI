@@ -74,6 +74,7 @@ from visualx.model import (
     Profile,
     status_for,
 )
+from visualx.score.calibrate import DETECTION_LEVEL
 from visualx.score.engine import RuleSet, load_rules, run_score
 from visualx.store import Store
 
@@ -103,11 +104,11 @@ COORDINATION: tuple[str, ...] = ("reply_burst", "creation_cluster", "fast_reply"
 # detectors give a rule (B02, B09 to B12) only at "notable" or higher, and a
 # lookalike of the owner or a known account is "high". The other detectors are
 # "info" by design: a finding is a reason to look.
+# One source with the calibration report (review 20261103: the two lists were copies).
 DETECT_LEVEL: dict[str, str] = {
-    "reply_burst": "notable", "creation_cluster": "notable", "fast_reply": "notable",
-    "shared_content": "notable", "lookalike": "high", "profile_outliers": "info",
-    "one_way": "info", "tight_group": "info",
-    "co_action": "notable", "profile_change": "notable", "mass_tagging": "notable", "community_anomaly": "notable",
+    d: DETECTION_LEVEL.get(d, "notable")
+    for d in ("reply_burst", "creation_cluster", "fast_reply", "shared_content", "lookalike", "profile_outliers",
+              "one_way", "tight_group", "co_action", "profile_change", "mass_tagging", "community_anomaly")
 }
 SEV_RANK = {"info": 0, "notable": 1, "high": 2}
 MEMBER_RULES = {"reply_burst": "B09", "creation_cluster": "B10", "fast_reply": "B11", "shared_content": "B02|B12",

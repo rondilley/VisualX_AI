@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import bisect
 import hashlib
+import json
 import math
 import statistics
 from collections import defaultdict
@@ -108,6 +109,11 @@ DETECTOR_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_handle_edit_distance": 2,
         "min_name_key_length": 8,
         "young_account_days": 365,
+        # A display name is text from X, so many accounts can share one key. A
+        # bucket larger than this compares each member with the owner and the
+        # known accounts only (review 20261103, B-03).
+        "max_bucket_size": 50,
+        "max_info_findings": 200,
     },
     "profile_outliers": {
         "enabled": True,
@@ -124,6 +130,10 @@ DETECTOR_DEFAULTS: dict[str, dict[str, Any]] = {
         "enabled": True,
         "min_size": 3,
         "max_findings": 10,
+        # The count of maximal cliques can grow exponentially with the core number.
+        # Above this core number the detector reports the densest core as one group
+        # (review 20261103, B-13).
+        "max_core": 15,
     },
 }
 
@@ -335,8 +345,6 @@ def _rank(sev: str) -> int:
 
 
 def _ego_posts(store: Any, ego: str | None) -> dict[str, dict[str, Any]]:
-    import json
-
     out: dict[str, dict[str, Any]] = {}
     if not ego:
         return out
@@ -483,12 +491,26 @@ def _plural(n: int, word: str) -> str:
 
 
 def _binom_tail(k: int, n: int, p: float) -> float:
-    """P(X >= k) for X ~ Binomial(n, p)."""
+    """P(X >= k) for X ~ Binomial(n, p). Shared with the network detectors.
+
+    The terms use ``lgamma`` in log space. ``math.comb(n, j) * p ** j`` gives an
+    integer too large for a float above about n = 1030, and that stopped the
+    score stage (review 20261103, B-05).
+    """
     if k <= 0:
         return 1.0
     if k > n:
         return 0.0
-    return min(1.0, sum(math.comb(n, j) * p ** j * (1.0 - p) ** (n - j) for j in range(k, n + 1)))
+    if p <= 0:
+        return 0.0
+    if p >= 1:
+        return 1.0
+    log_p, log_q = math.log(p), math.log1p(-p)
+    lg_n = math.lgamma(n + 1)
+    total = 0.0
+    for j in range(k, n + 1):
+        total += math.exp(lg_n - math.lgamma(j + 1) - math.lgamma(n - j + 1) + j * log_p + (n - j) * log_q)
+    return min(1.0, total)
 
 
 def _young_events(d: PatternData, young_days: float) -> list[tuple[datetime, str, bool]]:
@@ -659,17 +681,25 @@ def detect_reply_burst(d: PatternData, c: dict[str, Any]) -> list[Finding]:
         base = base_at(whole[0][0], set(all_members)) if use_base else base_global
         if use_base:
             best = 1.0
+            tested: set[frozenset[str]] = set()
             for i, j in _windows([e[0] for e in whole], width):
                 us = {e[1] for e in whole[i:j]}
                 y = len(us & young_all)
                 if y >= int(c["min_young_accounts"]):
+                    tested.add(frozenset(us))
                     pv = _binom_tail(y, len(us), base)
                     if pv < best:
                         best, young_win = pv, (i, j)
-            p_adj = min(1.0, best * len(bursts))
+            # Bonferroni over the bursts and over the different account sets that
+            # were tested in this burst: the smallest p of many windows is not a
+            # p-value of one test (review 20261103, B-10).
+            p_adj = min(1.0, best * len(bursts) * max(1, len(tested)))
             young_hit = p_adj <= float(c["max_p"])
         else:
-            young_hit = bool(known_age) and len(young_all) * 2 >= len(all_members)
+            # The low-base branch also needs the minimum count of young accounts:
+            # 2 young accounts in a burst of 4 are not a finding (review 20261103, B-09).
+            young_hit = (bool(known_age) and len(young_all) >= int(c["min_young_accounts"])
+                         and len(young_all) * 2 >= len(all_members))
         # Size test against posts with a similar reach, with a surplus of young accounts.
         peak, pi, pj = _peak_window(whole, width)
         near_peak = neighbor_peak(anchor) if anchor != "owner" else None
@@ -819,12 +849,17 @@ def detect_creation_cluster(d: PatternData, c: dict[str, Any]) -> list[Finding]:
         return k >= n_min and _poisson_tail(k, mu_at(i, j)) * n_windows <= float(c["max_p"])
 
     out: list[Finding] = []
-    for a, b in _merge_qualifying(_windows(times, width_h * 3600.0), ok):
+    spans = _windows(times, width_h * 3600.0)
+    for a, b in _merge_qualifying(spans, ok):
         part = recent[a:b]
         members = sorted(u for _, u in part)
         k = len(members)
-        mu_w = mu_at(a, b)
-        p_adj = min(1.0, _poisson_tail(k, mu_w) * n_windows)
+        # The p-value comes from the best single window in the merged span. The
+        # count of the merged span against the expected count of one window gave
+        # a p-value that was too small (review 20261103, B-10).
+        k_w, mu_w = max(((j - i, mu_at(i, j)) for i, j in spans if a <= i and j <= b and ok(i, j)),
+                        key=lambda x: (-_poisson_tail(x[0], x[1]), x[0]))
+        p_adj = min(1.0, _poisson_tail(k_w, mu_w) * n_windows)
         ages = [(ref - t).total_seconds() / 86400.0 for t, _ in part]
         sev = "notable"
         if all(x < float(c["young_account_days"]) for x in ages) or k >= 2 * n_min:
@@ -895,7 +930,7 @@ def detect_fast_reply(d: PatternData, c: dict[str, Any]) -> list[Finding]:
         summary = (
             f"{len(vals)} replies to your original posts came a median of {int(round(med))} seconds "
             f"(fastest {int(vals[0])}, slowest {int(vals[-1])}) after the post. "
-            "Replies this fast, again and again, are usual for accounts that watch your posts automatically."
+            "A person seldom replies this fast again and again; a program that watches your posts can."
         )
         ev = {"replies": len(vals), "median_seconds": round(med, 1), "min_seconds": round(vals[0], 1),
               "max_seconds": round(vals[-1], 1), "post_ids": sorted(first)}
@@ -986,12 +1021,15 @@ def detect_shared_content(d: PatternData, c: dict[str, Any]) -> list[Finding]:
             if len(norm) >= int(c["min_text_chars"]):
                 add(by_text, hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16], i)
         urls = _if(i, "urls") or []
+        # After drop_text the row holds host names only: a host is not a link (A-11).
+        hosts_only = i.get("field_status", {}).get("url_paths") == "absent"
         seen_hosts: set[str] = set()
         for u in urls:
             nu = _norm_url(str(u))
             if nu is None or _ignored(nu[1], ignore):
                 continue
-            add(by_link, nu[0], i, nu[1])
+            if not hosts_only:
+                add(by_link, nu[0], i, nu[1])
             if nu[1] not in seen_hosts:
                 seen_hosts.add(nu[1])
                 add(by_host, nu[1], i)
@@ -1036,7 +1074,9 @@ def detect_shared_content(d: PatternData, c: dict[str, Any]) -> list[Finding]:
             if kind == "text":
                 ev["text_hash"] = key
             else:
-                ev["link"] = key[:200]
+                # The path stays (the owner needs to see which link), the query does not:
+                # a query can hold an identifier of the person who shared it (B-16).
+                ev["link"] = key.split("?", 1)[0][:200]
                 ev["site_accounts_other_weeks"] = elsewhere
                 linked_users.add(frozenset(members))
             if times:
@@ -1053,7 +1093,9 @@ def detect_shared_content(d: PatternData, c: dict[str, Any]) -> list[Finding]:
         sev = "notable" if tight else "info"
         title = f"{len(members)} accounts linked to the same site"
         summary = (
-            f"{len(members)} different accounts linked to {host} in {len(g['posts'])} posts"
+            # The host is text from X: it stays in the evidence, not in the summary
+            # (FR-31 check, review 20261103, B-02).
+            f"{len(members)} different accounts linked to the same site in {len(g['posts'])} posts"
             + (f" between {_iso(times[0])} and {_iso(times[-1])}" if times else "")
             + "."
             + (f" All links came within {int(c['domain_window_days'])} days." if tight else "")
@@ -1084,7 +1126,9 @@ def _deletions(key: str, depth: int) -> set[str]:
     return out
 
 
-def _lookalike_candidates(rows: list[tuple[str, str, str | None, datetime | None]], c: dict[str, Any]) -> list[tuple[int, int]]:
+def _lookalike_candidates(
+    rows: list[tuple[str, str, str | None, datetime | None]], c: dict[str, Any], priority: frozenset[int] = frozenset()
+) -> list[tuple[int, int]]:
     """Index pairs (x < y) that can match in ``lookalike_match``. The other pairs cannot match.
 
     A comparison of each pair is O(n^2) and too slow for a few thousand
@@ -1093,7 +1137,12 @@ def _lookalike_candidates(rows: list[tuple[str, str, str | None, datetime | None
     two keys are at most k edits apart, they share a string made from each by
     deleting at most k characters. k is the largest distance that
     ``allowed_distance`` can give for the length of the key.
+
+    A bucket with more than ``max_bucket_size`` members gives only the pairs
+    that include a ``priority`` row (the owner and the known accounts). Without
+    this limit, n accounts with one display name give n(n-1)/2 pairs.
     """
+    max_bucket = int(c["max_bucket_size"])
     min_len = int(c["min_handle_length"])
     long_len = int(c["long_handle_min_length"])
     max_d = int(c["max_handle_edit_distance"])
@@ -1121,6 +1170,10 @@ def _lookalike_candidates(rows: list[tuple[str, str, str | None, datetime | None
         if len(members) < 2:
             continue
         uniq = sorted(set(members))
+        if len(uniq) > max_bucket:
+            for p in (x for x in uniq if x in priority):
+                pairs.update((min(p, x), max(p, x)) for x in uniq if x != p)
+            continue
         for i in range(len(uniq)):
             for j in range(i + 1, len(uniq)):
                 pairs.add((uniq[i], uniq[j]))
@@ -1176,7 +1229,9 @@ def detect_lookalike(d: PatternData, c: dict[str, Any], known: tuple[dict[str, A
         return role, ts
 
     out: list[Finding] = []
-    for x, y in _lookalike_candidates(rows, c):
+    priority = frozenset(i for i, r in enumerate(rows) if r[0] == ego or r[0] in known_ids)
+    n_info = 0
+    for x, y in _lookalike_candidates(rows, c, priority):
         a, b = rows[x], rows[y]
         m = lookalike_match(a[1], a[2], b[1], b[2], c)
         if m is None:
@@ -1196,6 +1251,10 @@ def detect_lookalike(d: PatternData, c: dict[str, Any], known: tuple[dict[str, A
         others = sorted(touch.get(look[0], set()) - {look[0], ref[0]})
         if ref[0] == ego and look[0] in known_ids:
             sev = "notable"
+        if sev == "info":
+            n_info += 1
+            if n_info > int(c["max_info_findings"]):
+                continue
         title = f"An account name looks like {whom}"
         how = {
             "handle_skeleton": "the handles are the same when separators and look-alike letters are ignored",
@@ -1399,6 +1458,15 @@ def detect_tight_group(d: PatternData, c: dict[str, Any]) -> list[Finding]:
     nodes = sorted({u for e in mutual for u in e})
     idx = {u: n for n, u in enumerate(nodes)}
     g = ig.Graph(n=len(nodes), edges=[(idx[a], idx[b]) for a, b in mutual])
+    core = g.coreness()
+    top = max(core)
+    if top > int(c["max_core"]):
+        dense = sorted(nodes[v] for v, k in enumerate(core) if k == top)
+        title = f"{len(dense)} accounts interact with each other in a dense group"
+        summary = (f"Each of these {len(dense)} accounts replied to or mentioned at least {top} of the others in the "
+                   "two directions. The group is too dense to list each tight group in it.")
+        ev = {"size": len(dense), "core_number": top}
+        return [Finding("tight_group", title, "info", summary, dense, ev, anchor="core")]
     cliques = [sorted(nodes[v] for v in cl) for cl in g.maximal_cliques(min=int(c["min_size"]))]
     owner_to = {i["target_user_id"] for i in d.interactions
                 if i["source_user_id"] == d.ego_id and i["type"] in INBOUND_TYPES}

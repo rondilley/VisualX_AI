@@ -56,11 +56,15 @@ from ..store import Store, now_iso
 
 ADAPTER = "archive"
 ADAPTER_VERSION = "1"
-MAX_FILE_BYTES = 1 << 30  # one archive file larger than 1 GiB is refused
+MAX_FILE_BYTES = 1 << 29  # one archive file larger than 512 MiB is refused
+# The post files are all in memory before the first write. A limit for their sum
+# (review 20261103, A-15). A large archive needs more memory than a 1 GiB limit for each file.
+MAX_POST_BYTES = 1 << 30
 ARCHIVE_TIME_FMT = "%a %b %d %H:%M:%S %z %Y"  # "Wed Oct 10 20:19:24 +0000 2018"
 STORE_TIME_FMT = "%Y-%m-%dT%H:%M:%S.000Z"  # the X API v2 created_at form that the store holds
 
-PREFIX_RE = re.compile(r"^\s*window\.YTD\.[A-Za-z0-9_]+\.part\d+\s*$")
+# ".partN" is optional: the file form is not verified on a real archive yet (TSC-02, A-25).
+PREFIX_RE = re.compile(r"^\s*window\.YTD\.[A-Za-z0-9_]+(\.part\d+)?\s*$")
 DATA_JS_RE = re.compile(r"^data/([A-Za-z0-9_.\-]+)\.js$")
 PART_RE = re.compile(r"-part\d+$")
 STATUS_URL_RE = re.compile(
@@ -228,6 +232,10 @@ def parse_js(data: bytes, rel: str) -> list[Any]:
     head, sep, body = text.partition("=")
     if not sep or not PREFIX_RE.match(head):
         raise ArchiveError(f"{_safe_name(rel)} does not start with 'window.YTD.<name>.partN ='; it is not a known archive file form")
+    # A file can end with ";" after the array (A-16). JSON does not allow it.
+    body = body.strip()
+    if body.endswith(";"):
+        body = body[:-1]
     try:
         value = json.loads(body)
     except ValueError as e:
@@ -564,6 +572,10 @@ def run_import(
             rep.warnings.append("the archive has no data/tweets.js or data/tweet.js file")
 
         # Read every post file before the first write, so a broken file stops the import with no change.
+        wanted = set(tweet_files)
+        total = sum(size for rel, size in src.names() if rel in wanted)
+        if total > MAX_POST_BYTES:
+            raise ArchiveError(f"the post files hold {total} bytes, more than the limit of {MAX_POST_BYTES} bytes")
         parsed = [(rel, parse_js(src.read(rel), rel)) for rel in tweet_files]
     finally:
         src.close()

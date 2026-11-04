@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,18 @@ FORBIDDEN_KEYS = frozenset(
      "token", "authorization", "code", "code_verifier", "client_secret", "password"}
 )
 # Keys that hold a raw X ID. The logger hashes these values.
-ID_KEYS = frozenset({"user_id", "post_id", "id", "author_id", "target_user_id", "source_user_id", "ids"})
+# since_id and until_id hold post IDs of other users (steps 2 and 6). The
+# pagination tokens are opaque, but X can derive them from post IDs, so they are
+# hashed too (review 20261103, A-05).
+ID_KEYS = frozenset({"user_id", "post_id", "id", "author_id", "target_user_id", "source_user_id", "ids",
+                     "since_id", "until_id", "pagination_token", "next_token"})
+# Keys that end in "_id" but hold IDs that the tool made, not X IDs. Each other key
+# that ends in "_id" or "_ids" is hashed too (review 20261103, B-27).
+TOOL_ID_KEYS = frozenset({"run_id", "stage_run_id", "render_id", "snapshot_id", "export_id", "batch_id",
+                          "sample_id", "finding_id", "rule_id", "lid"})
+_LONG_NUMBER = re.compile(r"[0-9]{8,}")
+# Keys whose long number is a time, not an ID (the rate-limit reset in epoch seconds).
+NUMBER_KEYS = frozenset({"reset"})
 
 
 def load_hmac_key(data_dir: str | Path) -> bytes:
@@ -48,12 +60,22 @@ class RunLog:
     def _clean(self, k: str, v: Any) -> Any:
         if k.lower() in FORBIDDEN_KEYS:
             raise ValueError(f"log field {k!r} is not allowed (OR-01, SR-01)")
-        if k in ID_KEYS:
+        if k in ID_KEYS or (k not in TOOL_ID_KEYS and (k.endswith("_id") or k.endswith("_ids"))):
             if isinstance(v, (list, tuple, set)):
                 return [self.hid(str(x)) for x in v]
             return self.hid(str(v))
         if isinstance(v, dict):
             return {kk: self._clean(kk, vv) for kk, vv in v.items()}
+        if k in NUMBER_KEYS:
+            return v
+        if isinstance(v, (list, tuple)):
+            return [self._clean_value(x) for x in v]
+        return self._clean_value(v)
+
+    def _clean_value(self, v: Any) -> Any:
+        """A string of 8 or more digits can be an X ID under a key that is not in the list (B-27)."""
+        if isinstance(v, str) and _LONG_NUMBER.fullmatch(v):
+            return self.hid(v)
         return v
 
     def write(self, event: str, **fields: Any) -> None:

@@ -19,6 +19,7 @@ import hashlib
 import http.server
 import json
 import secrets
+import socket
 import threading
 import time
 import urllib.parse
@@ -93,12 +94,26 @@ def build_authorize_url(
 
 class _Server(http.server.HTTPServer):
     listener: CallbackListener
+    # HTTPServer sets SO_REUSEADDR. On Windows that lets a second program bind the
+    # same port and receive the callback with the authorization code. The
+    # listener asks for exclusive use of the port (review 20261103, A-29).
+    allow_reuse_address = False
+
+    def server_bind(self) -> None:
+        excl = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if excl is not None:
+            self.socket.setsockopt(socket.SOL_SOCKET, excl, 1)
+        super().server_bind()
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
     server: _Server
     server_version = "visualx-callback"
     sys_version = ""
+    # A socket timeout for each connection. The server is single-threaded, so a
+    # local client that connects and sends nothing would block the callback
+    # until wait() stops (review 20261103, A-17).
+    timeout = 5
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         # The request line holds the authorization code. Do not print it.
@@ -149,7 +164,14 @@ class CallbackListener:
         self._code: str | None = None
         self._error: str | None = None
         self.rejected: list[str] = []
-        self._server = _Server((LOOPBACK_HOST, port), _Handler)
+        try:
+            self._server = _Server((LOOPBACK_HOST, port), _Handler)
+        except OSError as e:
+            # A-29: a port that another program uses is a message, not a traceback.
+            raise AuthError(
+                f"The callback listener cannot use {LOOPBACK_HOST}:{port} ({type(e).__name__}). Close the program "
+                "that uses the port, or change owner.redirect_port and the callback URL of the X app."
+            ) from e
         self._server.listener = self
         self._server.timeout = 0.2
         self._thread: threading.Thread | None = None
@@ -238,6 +260,11 @@ def _check_keyring() -> None:
     kr = keyring.get_keyring()
     bad = isinstance(kr, _kr_fail.Keyring) or (_kr_null is not None and isinstance(kr, _kr_null.Keyring))
     if isinstance(kr, _kr_chainer.ChainerBackend) and not kr.backends:
+        bad = True
+    # A-20 (review 20261103): a backend that writes the secret to a file (the
+    # keyrings.alt plaintext and file backends) is not the Credential Manager.
+    kinds = [kr, *(getattr(kr, "backends", None) or [])]
+    if any(type(b).__module__.startswith("keyrings.alt") or "Plaintext" in type(b).__name__ for b in kinds):
         bad = True
     if bad:
         raise AuthError(
@@ -449,6 +476,37 @@ def status(cfg: Config, client: Any) -> dict[str, str]:
     if not isinstance(data, dict) or not data.get("id"):
         raise AuthError("GET /2/users/me returned no user ID.")
     return {"user_id": str(data["id"]), "handle": str(data.get("username", ""))}
+
+
+def owner_mismatch(cfg: Config, store: Any, user_id: str, handle: str) -> str | None:
+    """Why the signed-in account is not the owner of config and of the store, or None (FR-54).
+
+    The same rule as the collect and sweep steps: the handle must be
+    ``owner.handle`` from config, and the store owner (if set) must be this user
+    ID or the provisional ID ``h:<handle>`` of this handle. Commands that write
+    the owner use this check first (review 20261103, A-06).
+    """
+    expected = str(cfg.get("owner.handle", "") or "").lstrip("@").casefold()
+    got = handle.lstrip("@").casefold()
+    if expected and got != expected:
+        return f"the signed-in account is not @{cfg.get('owner.handle')} from config owner.handle (FR-54)"
+    known = store.ego_id
+    if known is not None and known != user_id and not (known.startswith("h:") and known[2:].casefold() == got):
+        return "the signed-in account is not the owner account of this store (FR-54); use a new data folder"
+    return None
+
+
+def record_owner(cfg: Config, store: Any, user_id: str, handle: str) -> None:
+    """Write the verified owner into the store. Raise AuthError if it is not the owner (FR-54)."""
+    err = owner_mismatch(cfg, store, user_id, handle)
+    if err is not None:
+        raise AuthError(err)
+    known = store.ego_id
+    if known is not None and known != user_id:
+        store.rekey_user(known, user_id)  # the provisional h:<handle> owner of an earlier Grok run
+    store.set_meta("ego_user_id", user_id)
+    if handle:
+        store.set_meta("ego_handle", handle)
 
 
 def revoke(

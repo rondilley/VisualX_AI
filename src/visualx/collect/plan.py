@@ -38,7 +38,7 @@ from typing import Any
 
 from ..auth import AuthError
 from ..cache import Cache, request_hash
-from ..config import Config
+from ..config import Config, ConfigError
 from ..logs import RunLog
 from ..store import Store, new_id, now_iso
 from .base import Page, no_self_edges
@@ -205,6 +205,15 @@ class Billing:
 
     @classmethod
     def from_config(cls, cfg: Config) -> Billing:
+        if bool(cfg.get("billing_assumptions.expansions_billed", False)):
+            # X does not give a maximum for the objects in "includes", so the plan
+            # cannot reserve the maximum cost of a call, and invariant 3 does not
+            # hold. Refuse the setting (review 20261103, A-08).
+            raise ConfigError(
+                "billing_assumptions.expansions_billed = true is not supported: the X API has no limit on the "
+                "objects in \"includes\", so the tool cannot reserve the maximum cost of a call before the call. "
+                "Set it to false. If X bills includes, the X Console spend limit is the only hard limit."
+            )
         return cls(
             post_read=float(cfg.get("prices.post_read")),
             user_read=float(cfg.get("prices.user_read")),

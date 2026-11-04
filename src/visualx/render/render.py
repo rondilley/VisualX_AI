@@ -53,10 +53,57 @@ APP_JS = "app.js"
 PAYLOAD_VERSION = 1
 
 # SR-09. Change only with a recorded reason (ARCHITECTURE AD-09).
-CSP = (
-    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'none'; "
-    "connect-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'"
+# script-src lists the SHA-256 hash of each script element that the page runs
+# (the vendor files and app.js), not 'unsafe-inline'. An injected inline
+# script then does not run, so it cannot send data out by navigation, which
+# connect-src does not control (review 20261103, C-01). The template has static
+# style attributes, so style-src keeps 'unsafe-inline'; no value from X goes into
+# CSS. ``{scripts}`` is the list of hashes.
+CSP_TEMPLATE = (
+    "default-src 'none'; script-src {scripts}; script-src-attr 'none'; style-src 'unsafe-inline'; "
+    "img-src 'none'; connect-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'"
 )
+_CSP_SLOT = "VX-CSP-SLOT-7f3a"
+# The node size modes of the page (the Node size control in the template).
+SIZE_MODES: tuple[str, ...] = ("weighted_degree", "followers", "activity")
+# The payload element of the template. Deletion (delete.py) uses this pattern to
+# decode each page, so the two cannot drift apart (review 20261103, A-23).
+PAYLOAD_RE = re.compile(
+    r'<script[^>]*id="vx-payload"[^>]*>\s*([A-Za-z0-9+/=\s]+?)\s*</script>', re.DOTALL
+)
+# A script element that runs: no type, or a JavaScript type. The payload element
+# has type="application/octet-stream" and does not run, so it needs no hash.
+_SCRIPT_EL = re.compile(r"<script(?P<attrs>[^>]*)>(?P<body>.*?)</script>", re.DOTALL | re.IGNORECASE)
+_TYPE_ATTR = re.compile(r"""\btype\s*=\s*["']?([^"'\s>]+)""", re.IGNORECASE)
+
+
+def _runs(attrs: str) -> bool:
+    m = _TYPE_ATTR.search(attrs)
+    return m is None or m.group(1).lower() in ("text/javascript", "module", "application/javascript")
+
+
+def script_hashes(html: str) -> list[str]:
+    """CSP source expressions ('sha256-...') for each script element in ``html`` that runs.
+
+    The hash is over the text of the element after the HTML parser makes each CR
+    LF and each CR an LF, as the browser calculates it.
+    """
+    out = []
+    for m in _SCRIPT_EL.finditer(html):
+        if not _runs(m.group("attrs")):
+            continue
+        body = m.group("body").replace("\r\n", "\n").replace("\r", "\n")
+        digest = base64.b64encode(hashlib.sha256(body.encode("utf-8")).digest()).decode("ascii")
+        out.append(f"'sha256-{digest}'")
+    return out
+
+
+def csp_for(html: str) -> str:
+    """The CSP for a page: CSP_TEMPLATE with the hashes of its scripts."""
+    hashes = script_hashes(html)
+    if not hashes:
+        raise RenderError("the page has no script to hash")
+    return CSP_TEMPLATE.format(scripts=" ".join(dict.fromkeys(hashes)))
 
 _HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _MARK = re.compile(r"^[!-~]{1,2}$")  # printable ASCII, no space
@@ -170,8 +217,8 @@ def _render_config(cfg: Config) -> dict[str, Any]:
         if not _MARK.match(v):
             raise RenderError(f"render.state_shapes.{k} must be one or two printable ASCII characters")
     size_mode = rc.get("size_mode", "weighted_degree")
-    if size_mode not in ("weighted_degree", "followers"):
-        raise RenderError("render.size_mode must be 'weighted_degree' or 'followers'")
+    if size_mode not in SIZE_MODES:
+        raise RenderError("render.size_mode must be one of " + ", ".join(SIZE_MODES))
     core_max = int(rc.get("core_view_max_nodes", 2000))
     if core_max < 1:
         raise RenderError("render.core_view_max_nodes must be 1 or more")
@@ -273,6 +320,34 @@ def _ids_in(obj: Any, out: set[str], depth: int = 0) -> None:
             _ids_in(v, out, depth + 1)
 
 
+# Evidence keys that must not go into the page: post text, bios, and names are
+# text from X that the detectors must not keep (DR-09). The detectors keep a hash.
+_EVIDENCE_DENY = frozenset({"text", "texts", "bio", "description", "name", "names", "note_tweet"})
+_EVIDENCE_MAX_STR = 200
+_EVIDENCE_MAX_ITEMS = 200
+
+
+def _clean_evidence(v: Any, depth: int = 0) -> Any:
+    """The evidence of a finding, limited for the page (review 20261103, C-04).
+
+    Keys in ``_EVIDENCE_DENY`` go out. Strings are cut to 200 characters, lists to
+    200 items, and the nesting to 3 levels. The page shows each value with
+    ``textContent``, so this is a limit on what the file holds, not an XSS control.
+    """
+    if isinstance(v, bool) or v is None or isinstance(v, (int, float)):
+        return v
+    if isinstance(v, str):
+        return v[:_EVIDENCE_MAX_STR]
+    if depth >= 3:
+        return None
+    if isinstance(v, list):
+        return [_clean_evidence(x, depth + 1) for x in v[:_EVIDENCE_MAX_ITEMS]]
+    if isinstance(v, dict):
+        return {str(k)[:60]: _clean_evidence(x, depth + 1) for k, x in list(v.items())[:_EVIDENCE_MAX_ITEMS]
+                if str(k) not in _EVIDENCE_DENY}
+    return None
+
+
 def _findings(store: Store, index: dict[str, int]) -> tuple[list[dict[str, Any]], set[str]]:
     """Findings for the Findings drawer. Members become node indexes; other members stay as IDs.
 
@@ -306,6 +381,7 @@ def _findings(store: Store, index: dict[str, int]) -> tuple[list[dict[str, Any]]
             else:
                 mx.append(uid)
         _ids_in(evidence, ids)
+        evidence = _clean_evidence(evidence) if isinstance(evidence, dict) else {}
         sev = r["severity"] if r["severity"] in SEVERITIES else "info"
         key = (r["detector"], json.dumps(sorted(str(m) for m in members), ensure_ascii=False, separators=(",", ":")))
         out.append({"id": r["finding_id"], "det": r["detector"], "title": r["title"], "sev": sev,
@@ -365,19 +441,44 @@ def redact_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """A copy of the payload for a file that the owner can show to other persons (T7, v0.2).
 
     No handle, name, user ID, profile field, topic, signal state, rule result, override, or
-    finding stays. The owner node is "Owner". Each other node is "Account <n>" in a random
-    order with a fixed seed, so the numbers do not follow the user ID order. The structure
-    (links, types, weights, times, layout, communities, hubs, bridges) stays.
+    finding stays. The owner node is "Owner". The other nodes are "Account <n>".
+
+    The file must not let a reader find an account again from public data
+    (review 20261103, C-02 and C-03):
+
+    - The node arrays get a secret random permutation (``secrets.SystemRandom``),
+      and the labels follow the new order. Before, the arrays kept the user ID
+      order and the label shuffle used the node count as its seed.
+    - No absolute time stays: ``t0``, the collection window, the observed times,
+      the run IDs, and the render time are removed. The link times stay only as
+      whole days after the first link, so a reader cannot match a link to the
+      minute of a public reply. Without ``t0`` the page shows no dates.
+
+    The structure (links, types, weights, layout, communities, hubs, bridges) stays.
     """
-    import random
+    import secrets
 
     p = json.loads(json.dumps(payload))
     n = len(p["n"]["id"])
-    ego = p["meta"]["ego_index"]
-    order = list(range(n))
-    random.Random(n).shuffle(order)
-    label = {i: k + 1 for k, i in enumerate(x for x in order if x != ego)}
     N = p["n"]
+    # Secret permutation of all node columns: new position k holds old node perm[k].
+    perm = list(range(n))
+    secrets.SystemRandom().shuffle(perm)
+    new_of = {old: k for k, old in enumerate(perm)}
+    for key, col in N.items():
+        if not isinstance(col, list) or len(col) != n:
+            raise RenderError(f"node column {key!r} does not have one value for each node")
+        N[key] = [col[old] for old in perm]
+    p["e"]["s"] = [new_of[i] for i in p["e"]["s"]]
+    p["e"]["t"] = [new_of[i] for i in p["e"]["t"]]
+    old_ego = p["meta"]["ego_index"]
+    ego = new_of[old_ego] if isinstance(old_ego, int) and 0 <= old_ego < n else -1
+    p["meta"]["ego_index"] = ego
+    others = [i for i in range(n) if i != ego]
+    label = {i: k + 1 for k, i in enumerate(others)}
+    # Link times: whole days after the first link, no absolute anchor.
+    for k in ("ft", "lt"):
+        p["e"][k] = [None if v is None else (int(v) // 1440) * 1440 for v in p["e"][k]]
     for i in range(n):
         N["id"][i] = "r" + str(label.get(i, 0))
         N["h"][i] = None
@@ -400,7 +501,12 @@ def redact_payload(payload: dict[str, Any]) -> dict[str, Any]:
     meta["counts"]["rules_fired"] = 0
     meta["counts"]["findings"] = 0
     meta["counts"]["without_state_record"] = n
-    meta["collect"]["sources"] = []
+    meta["collect"] = {"sources": []}
+    meta["t0"] = None
+    meta["render_id"] = None
+    meta["inputs"] = {}
+    meta["generated_at"] = "not shown in a redacted file"
+    p["cfg"]["topics"] = []
     return p
 
 
@@ -449,8 +555,8 @@ def build_payload(cfg: Config, store: Store, render_id: str, inputs: dict[str, s
     """Return (payload, ids). The payload has no post text and no image URLs.
 
     Post IDs can occur in finding evidence (for example the posts of a reply burst), so
-    every ID that a finding names goes into ``render_members`` both as a user ID and as a
-    post ID (AD-10, review 20261102-225212).
+    each ID that a finding names goes into ``render_members`` as a user ID, and each such
+    ID that is not a node also as a post ID (AD-10, review 20261102-225212).
     """
     nodes = store.q(
         "SELECT user_id, handle, name, profile_status, is_ego, in_degree, out_degree, degree, weighted_degree, "
@@ -616,12 +722,16 @@ def render_page(payload_b64: str, vendor_scripts: list[tuple[str, str]] | None =
     if _UNSAFE_IN_SCRIPT.search(app_js):
         raise RenderError("app.js contains a sequence that can end a script element")
     tpl = _env().get_template(TEMPLATE_NAME)
-    return tpl.render(
-        csp=Markup(CSP),  # a constant of this module, no value from X
+    html = tpl.render(
+        csp=Markup(_CSP_SLOT),
         vendor_scripts=[(name, Markup(text)) for name, text in scripts],
         app_js=Markup(app_js),
         payload=payload_b64,
     )
+    if html.count(_CSP_SLOT) != 1:
+        raise RenderError("the CSP slot is not in the template exactly one time")
+    # The CSP holds only constants and hashes of the static scripts, no value from X.
+    return html.replace(_CSP_SLOT, csp_for(html), 1)
 
 
 def run_render(cfg: Config, store: Store, log: RunLog, out_path: Path | None = None, redact: bool = False) -> Path:

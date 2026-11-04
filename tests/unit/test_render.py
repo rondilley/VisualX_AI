@@ -24,7 +24,16 @@ from tests.unit.test_render_support import (
 )
 from visualx.delete import decode_payloads, delete_ids, find_id
 from visualx.render import render as render_mod
-from visualx.render import CSP, RenderError, decode_payload, encode_payload, load_vendor, run_render
+from visualx.render import (
+    CSP_TEMPLATE,
+    RenderError,
+    csp_for,
+    decode_payload,
+    encode_payload,
+    load_vendor,
+    run_render,
+    script_hashes,
+)
 from visualx.store import StaleError
 
 
@@ -119,11 +128,17 @@ def test_template_escaping_and_csp(env):
     for raw in (HOSTILE_NAME, "alert(2)", HOSTILE_URL, "Alice bio", "@alice", "Owner note"):
         assert raw not in html
     assert html.count('id="vx-payload"') == 1
-    # The exact CSP of SR-09 is the first meta element after the charset.
+    # The CSP of SR-09 is the first meta element after the charset. script-src
+    # holds one SHA-256 hash for each script that runs (3 vendor files and app.js),
+    # not 'unsafe-inline' (review 20261103, C-01).
     m = re.search(r'<meta http-equiv="Content-Security-Policy" content="([^"]+)">', html)
-    assert m is not None and m.group(1) == CSP
-    assert CSP == ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'none'; "
-                   "connect-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'")
+    assert m is not None and m.group(1) == csp_for(html)
+    assert CSP_TEMPLATE == ("default-src 'none'; script-src {scripts}; script-src-attr 'none'; "
+                            "style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; worker-src 'none'; "
+                            "base-uri 'none'; form-action 'none'")
+    script_src = re.search(r"script-src ([^;]+);", m.group(1)).group(1).split()
+    assert len(script_src) == 4 and all(re.fullmatch(r"'sha256-[A-Za-z0-9+/]{43}='", s) for s in script_src)
+    assert "'unsafe-inline'" not in script_src and "'unsafe-eval'" not in m.group(1)
     assert html.index("Content-Security-Policy") < html.index("<script")
     # No external references (SR-03).
     assert not re.search(r"<(script|link|img|iframe)[^>]+(src|href)=", html, re.I)
@@ -226,3 +241,23 @@ def test_delete_finds_and_removes_render(env):
     assert str(path.resolve()) in rep.renders_deleted
     assert not path.exists()
     assert rep.remaining == []
+
+
+def test_finding_evidence_is_limited_in_the_page(env):
+    # C-04 (review 20261103): evidence went into the page with no filter.
+    import json
+
+    from visualx.render.render import _clean_evidence
+
+    ev = {"kind": "link", "link": "x" * 500, "text": "post text from X", "bio": "a bio",
+          "posts": [str(n) for n in range(500)], "deep": {"a": {"b": {"c": {"d": 1}}}}, "accounts": 3}
+    out = _clean_evidence(ev)
+    assert "text" not in out and "bio" not in out
+    assert len(out["link"]) == 200 and len(out["posts"]) == 200 and out["accounts"] == 3
+    assert out["deep"]["a"]["b"] is None
+    cfg, store, _, log, _ = env
+    store.conn.execute("INSERT INTO findings VALUES ('fz','shared_content','t','info','s','[]',?,'r')",
+                       (json.dumps({"kind": "text", "text": "hostile post text", "accounts": 3}),))
+    d = decode_payloads(run_render(cfg, store, log).read_text(encoding="utf-8"))[0]
+    f = next(x for x in d["f"] if x["id"] == "fz")
+    assert f["ev"] == {"kind": "text", "accounts": 3}

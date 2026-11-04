@@ -24,6 +24,27 @@ ID_KEYS = frozenset({"id", "author_id", "in_reply_to_user_id", "conversation_id"
 # An object whose own identity or author is a deleted ID is dropped whole.
 DROP_KEYS = frozenset({"id", "author_id"})
 _DROP = object()
+# Keys that hold post text or model text in an X API or xAI response (AD-11).
+TEXT_KEYS = frozenset({"text", "note_tweet", "output_text"})
+
+
+def _drop_keys(obj: Any, keys: frozenset[str]) -> tuple[Any, bool]:
+    """``obj`` without dict keys in ``keys`` at any level, and True if a key was removed."""
+    if isinstance(obj, dict):
+        out: dict[str, Any] = {}
+        changed = False
+        for k, v in obj.items():
+            if k in keys:
+                changed = True
+                continue
+            nv, ch = _drop_keys(v, keys)
+            out[k] = nv
+            changed = changed or ch
+        return out, changed
+    if isinstance(obj, list):
+        items = [_drop_keys(v, keys) for v in obj]
+        return [v for v, _ in items], any(ch for _, ch in items)
+    return obj, False
 
 
 def request_hash(endpoint: str, params: dict[str, Any]) -> str:
@@ -86,16 +107,54 @@ class Cache:
             n += 1
         return n
 
+    def drop_text(self) -> int:
+        """Remove post text from each cache file (``retain_text = false``, AD-11). Returns files rewritten.
+
+        ``Store.drop_text`` clears the store, but the raw responses keep the text
+        until the cache retention ends (review 20261103, A-12). This removes the
+        keys in ``TEXT_KEYS`` at every level and keeps the IDs and the URLs.
+        """
+        n = 0
+        for p in sorted(self.dir.glob("*.json.gz")):
+            with gzip.open(p, "rt", encoding="utf-8") as f:
+                body = json.load(f)
+            cleaned, changed = _drop_keys(body, TEXT_KEYS)
+            if not changed:
+                continue
+            tmp = p.with_suffix(".tmp")
+            with gzip.open(tmp, "wt", encoding="utf-8") as f:
+                json.dump(cleaned, f, ensure_ascii=False)
+            tmp.replace(p)
+            n += 1
+        return n
+
     def files_with(self, ids: set[str]) -> list[str]:
         if not ids:
             return []
         marks = ",".join("?" * len(ids))
         return [r["file"] for r in self.store.q(f"SELECT DISTINCT file FROM cache_ids WHERE id IN ({marks})", sorted(ids))]
 
+    def _files_by_content(self, ids: set[str]) -> list[str]:
+        """Cache files whose text holds one of ``ids`` as a token.
+
+        The ``cache_ids`` index has only the values of ID keys. An ID can also occur
+        only inside a string, for example a status URL in a Grok citation, and
+        ``find_id`` scans the full text (review 20261103, A-03).
+        """
+        pat = _id_pattern(ids)
+        out = []
+        for p in sorted(self.dir.glob("*.json.gz")):
+            with gzip.open(p, "rt", encoding="utf-8") as f:
+                if pat.search(f.read()):
+                    out.append(p.name)
+        return out
+
     def scrub(self, ids: set[str]) -> int:
         """Rewrite each cache file that holds one of ``ids`` without the matching objects."""
+        if not ids or any(not i for i in ids):
+            raise ValueError("scrub needs one or more IDs that are not empty")
         n = 0
-        for name in self.files_with(ids):
+        for name in sorted(set(self.files_with(ids)) | set(self._files_by_content(ids))):
             p = self.dir / name
             if not p.exists():
                 with self.store.tx() as c:
@@ -118,8 +177,74 @@ class Cache:
             n += 1
         return n
 
+    def scrub_handles(self, handles: set[str]) -> int:
+        """Replace a deleted user's handle in each cache file with ``[deleted]`` (review 20261103, A-13).
+
+        See ``handle_sub``: a string equal to the handle, ``@handle``, and the
+        handle as a path part of a URL. Returns the count of files rewritten.
+        """
+        if not handles:
+            return 0
+        n = 0
+        for p in sorted(self.dir.glob("*.json.gz")):
+            with gzip.open(p, "rt", encoding="utf-8") as f:
+                raw = f.read()
+            if not any(h.casefold() in raw.casefold() for h in handles):
+                continue
+            body = json.loads(raw)
+            cleaned = _map_strings(body, lambda s: handle_sub(s, handles))
+            if cleaned == body:
+                continue
+            tmp = p.with_suffix(".tmp")
+            with gzip.open(tmp, "wt", encoding="utf-8") as f:
+                json.dump(cleaned, f, ensure_ascii=False)
+            tmp.replace(p)
+            n += 1
+        return n
+
+
+_HANDLE = re.compile(r"[A-Za-z0-9_]{1,15}")
+
+
+def handle_patterns(handles: set[str]) -> list[re.Pattern[str]]:
+    """Patterns for the places where a handle is an identifier, not an ordinary word.
+
+    ``@handle`` in text, and ``/handle/`` or ``/handle`` at the end in a URL path.
+    A bare word is not matched, because a short handle can be a common word.
+    """
+    out = []
+    for h in sorted(handles):
+        if not _HANDLE.fullmatch(h):
+            raise ValueError(f"not an X handle: {h[:20]!r}")
+        e = re.escape(h)
+        out.append(re.compile(rf"@{e}(?![A-Za-z0-9_])", re.IGNORECASE))
+        out.append(re.compile(rf"(?<=/){e}(?=/|$|\?)", re.IGNORECASE))
+    return out
+
+
+def handle_sub(s: str, handles: set[str]) -> str:
+    """``s`` with each identifier use of a handle replaced. A string equal to a handle becomes ``[deleted]``."""
+    if s.lstrip("@").casefold() in {h.casefold() for h in handles} or s.casefold() in {f"h:{h.casefold()}" for h in handles}:
+        return "[deleted]"
+    for pat in handle_patterns(handles):
+        s = pat.sub("[deleted]", s)
+    return s
+
+
+def _map_strings(obj: Any, fn: Any) -> Any:
+    if isinstance(obj, dict):
+        return {k: _map_strings(v, fn) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_map_strings(v, fn) for v in obj]
+    if isinstance(obj, str):
+        return fn(obj)
+    return obj
+
 
 def _id_pattern(ids: set[str]) -> re.Pattern[str]:
+    if not ids or any(not i for i in ids):
+        # An empty alternative matches between any two characters.
+        raise ValueError("an ID pattern needs one or more IDs that are not empty")
     alts = "|".join(re.escape(i) for i in sorted(ids, key=len, reverse=True))
     return re.compile(rf"(?<![0-9A-Za-z_])(?:{alts})(?![0-9A-Za-z_])")
 

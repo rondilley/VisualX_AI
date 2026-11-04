@@ -110,8 +110,14 @@ def validate(raw: dict[str, Any]) -> None:
     for k in SIGNAL_STATES:
         if not isinstance(shapes.get(k), str) or not (1 <= len(shapes[k]) <= 2):
             raise ConfigError(f"render.state_shapes.{k} must be one or two characters")
-    if raw.get("render", {}).get("size_mode") not in ("weighted_degree", "followers"):
-        raise ConfigError("render.size_mode must be 'weighted_degree' or 'followers'")
+    if raw.get("render", {}).get("size_mode") not in ("weighted_degree", "followers", "activity"):
+        # The same three modes as the Node size control of the page (review 20261103, C-20).
+        raise ConfigError("render.size_mode must be 'weighted_degree', 'followers', or 'activity'")
+    if raw.get("billing_assumptions", {}).get("expansions_billed", False) is not False:
+        # Invariant 3: the plan reserves the maximum cost of a call. X gives no
+        # maximum for "includes", so this setting cannot keep the cap (review 20261103, A-08).
+        raise ConfigError("billing_assumptions.expansions_billed must be false: the X API has no limit on the "
+                          "objects in includes, so the tool cannot reserve the maximum cost of a call")
 
 
 def load(config_dir: str | Path = "config", root: str | Path | None = None) -> Config:

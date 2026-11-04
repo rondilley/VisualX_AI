@@ -562,6 +562,19 @@ class Store:
                            ("node_states", "user_id"), ("render_members", "user_id"), ("overrides", "user_id")):
                 c.execute(f"DELETE FROM {t} WHERE {col}=?", (old,))
             c.execute("DELETE FROM edges WHERE source=? OR target=?", (old, old))
+            c.execute("DELETE FROM node_groups WHERE user_id=?", (old,))  # the next analyze makes it again
+            # Tables that keep a user over time must follow the new ID, so that a later
+            # delete by the X user ID finds them (review 20261103, A-14).
+            for t in ("snapshot_nodes", "profile_history"):
+                c.execute(f"UPDATE OR IGNORE {t} SET user_id=? WHERE user_id=?", (new, old))
+                c.execute(f"DELETE FROM {t} WHERE user_id=?", (old,))
+            for t in ("calibration_samples", "calibration_labels", "export_members"):
+                c.execute(f"UPDATE {t} SET user_id=? WHERE user_id=?", (new, old))
+            quoted_old, quoted_new = json.dumps(old), json.dumps(new)
+            for t, cols in (("findings", ("members_json", "evidence_json")), ("snapshot_findings", ("members_json",))):
+                for col in cols:
+                    c.execute(f"UPDATE {t} SET {col}=REPLACE({col}, ?, ?) WHERE instr({col}, ?) > 0",
+                              (quoted_old, quoted_new, quoted_old))
             for k in ("ego_user_id",):
                 if self.get_meta(k) == old:
                     c.execute("UPDATE meta SET value=? WHERE key=?", (new, k))
@@ -590,20 +603,35 @@ class Store:
 
         The rules that need text (B01, B04, B07) give no result on the next score
         for these rows, because field_status marks the text as ``absent``.
+
+        ``urls`` then holds host names only, and ``field_status["url_paths"]`` is
+        ``absent``. The domain rules (B05, B06, the same-site finding) still work.
+        The same-link test (B02) does not use these rows, because a host is not a
+        link. A second run keeps the hosts as they are (review 20261103, A-11).
         """
         from urllib.parse import urlsplit
+
+        def host(u: str) -> str:
+            try:
+                return urlsplit(u if "://" in u else "http://" + u).hostname or ""
+            except ValueError:
+                return ""
 
         n = 0
         with self.tx() as c:
             rows = c.execute(
-                "SELECT interaction_id, urls_json, field_status_json FROM interactions WHERE text IS NOT NULL OR urls_json IS NOT NULL"
+                "SELECT interaction_id, text, urls_json, field_status_json FROM interactions "
+                "WHERE text IS NOT NULL OR urls_json IS NOT NULL"
             ).fetchall()
             for r in rows:
                 fs = json.loads(r["field_status_json"])
+                if r["text"] is None and fs.get("url_paths") == "absent":
+                    continue  # done on an earlier run
                 urls = json.loads(r["urls_json"]) if r["urls_json"] else None
-                domains = sorted({urlsplit(u).hostname or "" for u in urls} - {""}) if urls else None
+                domains = sorted({host(str(u)) for u in urls} - {""}) if urls else None
                 fs["text"] = "absent"
                 fs["urls"] = "present" if domains else "absent"
+                fs["url_paths"] = "absent"
                 c.execute(
                     "UPDATE interactions SET text=NULL, urls_json=?, field_status_json=? WHERE interaction_id=?",
                     (dumps(domains) if domains else None, dumps(fs), r["interaction_id"]),

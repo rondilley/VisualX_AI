@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from datetime import datetime, timedelta
 
 from tests.unit.test_rules_kit import ACC, EGO, ego_profile, interaction, profile, score
@@ -92,11 +94,19 @@ def test_b04_fires_for_phrase_in_reply(tmp_path):
 def test_b04_fires_for_phrase_in_bio(tmp_path):
     s = score(tmp_path, profiles=[ego_profile(), profile(description="Crypto expert. DM me for help.")])
     assert "B04" in s.fired()
-    assert "'dm me'" in s.hit("B04")["cause"]
+    assert "'dm me for'" in s.hit("B04")["cause"]
 
 
 def test_b04_does_not_fire_for_ordinary_text(tmp_path):
     s = score(tmp_path, interactions=[interaction(text="My wallets are full of receipts, ha")])
+    assert "B04" not in s.fired()
+
+
+@pytest.mark.parametrize("text", ["Use a hardware wallet for that", "The conference giveaway was a mug",
+                                  "dm me if you want the slides"])
+def test_b04_does_not_fire_for_ordinary_use_of_scam_words(tmp_path, text):
+    # B-11 (review 20261103): one common word gave 2 behavior points.
+    s = score(tmp_path, interactions=[interaction(text=text)])
     assert "B04" not in s.fired()
 
 
@@ -151,3 +161,71 @@ def test_behavior_rules_do_not_read_other_accounts(tmp_path):
     items = [interaction(), interaction(src=EGO, tgt=ACC, text="As an AI language model, ha")]
     s = score(tmp_path, interactions=items)
     assert "B07" not in s.fired()
+
+
+def _pairwise_b01(norms, k=3, limit=0.9):
+    """The earlier B01 method: compare each pair."""
+    from visualx.score import signals as S
+
+    sh = [S._shingles(n.split(), k) for n in norms]
+    parent = list(range(len(norms)))
+
+    def find(x):
+        while parent[x] != x:
+            x = parent[x]
+        return x
+    for a in range(len(norms)):
+        for b in range(a + 1, len(norms)):
+            if find(a) == find(b):
+                continue
+            inter, union = len(sh[a] & sh[b]), len(sh[a] | sh[b])
+            if norms[a] == norms[b] or (union and inter / union >= limit):
+                parent[find(b)] = find(a)
+    sizes = {}
+    for x in range(len(norms)):
+        sizes[find(x)] = sizes.get(find(x), 0) + 1
+    return max(sizes.values(), default=0)
+
+
+class _Replies:
+    """The part of Inputs that B01 reads."""
+
+    def __init__(self, texts):
+        self.texts = texts
+
+    def own(self, name, types=()):
+        return [{"text": t} for t in self.texts]
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_b01_index_gives_the_same_groups_as_a_comparison_of_each_pair(seed):
+    # B-12 (review 20261103): B01 compared each pair of replies (1,500 replies: 6.7 s).
+    import random
+
+    from visualx.model import normalize_text
+    from visualx.score import signals as S
+
+    rng = random.Random(seed)
+    words = [f"w{n}" for n in range(40)]
+    base = [" ".join(rng.choice(words) for _ in range(rng.randint(2, 30))) for _ in range(30)]
+    texts = []
+    for _ in range(300):
+        t = rng.choice(base).split()
+        if rng.random() < 0.6:
+            t[rng.randrange(len(t))] = rng.choice(words)  # a near copy or a different text
+        texts.append(" ".join(t))
+    params = {"jaccard": 0.9, "shingle_words": 3}
+    got = S.max_duplicate_replies(_Replies(texts), params).value
+    want = _pairwise_b01([n for n in (normalize_text(x) for x in texts) if n])
+    assert got == want
+
+
+def test_b01_is_fast_on_many_different_replies():
+    import time
+
+    from visualx.score import signals as S
+
+    texts = [f"reply number {n} with some words that differ {n * 7} and {n * 13}" for n in range(3000)]
+    t0 = time.perf_counter()
+    assert S.max_duplicate_replies(_Replies(texts), {"jaccard": 0.9, "shingle_words": 3}).value == 1
+    assert time.perf_counter() - t0 < 2.0

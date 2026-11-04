@@ -294,3 +294,27 @@ def test_network_finding_text_has_no_handle(tmp_path):
         text = (f["title"] + " " + f["summary"]).casefold()
         assert "rondil" not in text and "harborwalnut" not in text
         json.loads(f["evidence_json"])
+
+
+# -- P3 items of review 20261103 ----------------------------------------------
+
+
+def test_profile_change_needs_the_earlier_handle(tmp_path):
+    # B-17: a history row with no handle is not "did not look like the owner".
+    vs = [xprof("201", "2026-09-01T00:00:00.000Z", handle=None, name="Harbor Walnut", created_at=OLD),
+          xprof("201", "2026-11-01T00:00:00.000Z", handle="RonDilIey", name="Ron Dilley", created_at=OLD)]
+    s = history_run(tmp_path, vs)
+    assert not [f for f in findings(s, "profile_change") if f["evidence"]["kind"] == "toward_known"]
+    assert "I04" not in s.fired("201")
+
+
+def test_co_action_with_no_impression_counts_uses_the_pooled_latencies(tmp_path):
+    # B-18: a missing impression count was read as 0 (the low-reach band).
+    profs, items, _posts = co_fixture(2, 5)
+    st = make_store(tmp_path)
+    for j in range(10):
+        st.put_post({"id": POSTS[j], "author_id": EGO, "created_at": at(j * 1440),
+                     "public_metrics": {"reply_count": 5}}, "test", "run_test")
+    s = score(tmp_path, profiles=[ego_profile(), *profs], interactions=items, store=st)
+    f = findings(s, "co_action")
+    assert len(f) == 1 and sorted(f[0]["members"]) == [uid(50), uid(51), uid(52)]

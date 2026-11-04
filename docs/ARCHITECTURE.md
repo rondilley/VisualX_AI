@@ -59,7 +59,7 @@ flowchart LR
 | `render` | All tables, template, vendor files | `map_<run>.html`, tables `renders`, `render_members` | No |
 | `delete` | Post IDs or user IDs | Removes the IDs from all of the above (AD-10) | No |
 
-Only `collect` spends money. All other subcommands can run again as frequently as necessary, at no cost. This is the most important property of the design.
+Only `collect`, `sweep`, and `auth status` spend money, and each one asks for approval first. All other subcommands can run again as frequently as necessary, at no cost. This is the most important property of the design.
 
 ---
 
@@ -208,6 +208,8 @@ On an incremental run (FR-08), the tool gets only the new posts of each seed (`s
 
 **Unverified billing assumptions** are flagged configuration values (FR-12, FR-16). In v0.1 there are two: X does not bill the expansion objects in `includes` (OQ-01), and Owned Reads apply with the user token (OQ-02). Slice 0 tests the two assumptions with a paid $5 probe. Until then, the estimator shows the two assumptions and the cost if each one is incorrect.
 
+The configuration refuses `expansions_billed = true`. X gives no maximum for the objects in `includes`, so the plan could not reserve the maximum cost of a call (review 20261103, A-08). A connect error stops a request before it goes to X, so the client sends it again. X can bill a request that it got. So after a read error, the client does not send the request again (A-07).
+
 **Rate limits.** The quote and repost endpoints allow 75 requests in 15 minutes for each user [V1-R2]. At 300 API calls for each endpoint, that is about 1 hour for each endpoint. The collector waits for the reset time in the `x-rate-limit-reset` header. It does not change to a different token or app to go around the limit (NFR-05, V1-R8 III.D).
 
 **Cursor.** After each page, the collector writes the next pagination token and the step number to SQLite in the same transaction as the interactions. A restart continues from that point. The raw cache prevents a second payment for a page that the collector received but did not store.
@@ -218,7 +220,7 @@ On an incremental run (FR-08), the tool gets only the new posts of each seed (`s
 
 ## 6. AD-05: OAuth 2.0 PKCE with a loopback listener, tokens in the Windows Credential Manager
 
-**Decision:** the owner signs in one time with OAuth 2.0 Authorization Code and PKCE. The tool opens the browser at the X authorization URL and starts a listener bound to `127.0.0.1` on a free port. The listener accepts one `GET` on `/callback` with a `code` and a correct `state`. It rejects a different path or method, a missing code, a bad `state`, and a second callback, and then it stops. The access token and refresh token go into the OS keyring through the `keyring` package (Windows Credential Manager) as a single JSON value.
+**Decision:** the owner signs in one time with OAuth 2.0 Authorization Code and PKCE. The tool opens the browser at the X authorization URL and starts a listener on `127.0.0.1:<owner.redirect_port>` (exclusive use). The listener accepts one `GET` on `/callback` with a `code` and a correct `state`. It rejects a different path or method, a missing code, a bad `state`, and a second callback, and then it stops. The access token and refresh token go into the OS keyring through the `keyring` package (Windows Credential Manager) as a single JSON value.
 
 **Alternative:** an app-only bearer token in a file.
 
@@ -330,11 +332,13 @@ The snapshot tables hold states, so the same limits apply as for the score table
   cause: "Account created {value} days before first interaction"
 - id: I01
   family: impersonation
-  signal: name_skeleton_matches_ego
+  signal: impersonates_ego
   when: {eq: true}
   hard: true
   cause: "Name looks like your account @{ego_handle}"
 ```
+
+I01 is a hard rule, so it uses only the strong test (review 20261103, B-01). It fires at all ages when the handle looks the same as the owner handle (`lookalike_match` gives `handle_skeleton`). A display name that looks like the owner, or a near handle, is different. Then I01 fires only on an account younger than `young_account_days`, with the grade "high". If X made the account more than one year earlier, it is frequently a second person with the same name. The lookalike detector continues to report that pair.
 
 Each signal function declares its input fields, and the engine reads `field_status` on the profile and on each interaction. If a declared input is `absent` or `unreadable`, the rule gives no result for that account and the engine logs one entry (FR-57). It does not change a missing value to zero.
 
@@ -342,7 +346,7 @@ Each signal function declares its input fields, and the engine reads `field_stat
 
 ```text
 if a gate rule fires (N01, N02, N03)                        -> not_scored
-elif an owner override exists                               -> override value
+elif an owner override exists                               -> override value (with an OVERRIDE cause row, 0 points)
 elif a hard rule fires (I01 in v0.1)                        -> many_signals
 elif total >= 6 and 2 or more behavior or impersonation points -> many_signals
 elif total >= 3                                             -> some_signals
@@ -363,7 +367,7 @@ The bands come from research §5, section 6.1. They are engineering decisions, n
 
 1. Every rule has a `family`. TR-06 gives an error if a rule has no family, or if a rule input or keyword is on the list of sensitive categories. This test proves only that the rule file does not contain the known fields and keywords. But a rule can operate as a proxy for a sensitive category through other terms. The owner's review of each new rule is the second control.
 2. State names and cause strings do not contain "legit", "risky", "bot", or "scammer" (TSC-29).
-3. Only `render` reads `node_states`, `rule_results`, and `findings`. No export reads them (BSC-05 d).
+3. Only `render`, the calibration report, the snapshots, and the count summary of `cli.py` read `node_states`, `rule_results`, and `findings` (invariant 8). No export reads them (BSC-05 d).
 
 **The rule set (2026-11-03).** The rule file has 31 rules: the 17 of FR-36, the 7 starter rules of FR-56 (P02, P04, B02, B06, B08, I02, I03), B09 to B12 from the pattern layer, and B13, B14, and I04 from the network detectors. B06 (v0.2) is a hard rule (+6) for a link in a post to a domain on the owner's threat feed, `config/threat_domains.txt`. The owner selects the feed and records its terms in `feed_terms`, and `max_domains` is the size limit. With no feed file, B06 is off, and it reads only post links, so a profile field alone cannot give it (FR-35).
 
@@ -381,7 +385,7 @@ I02 compares each account with the allowlist and with the owner's top 10 contact
 | `profile_outliers` | Strong statistical outliers in the contacts | robust z of 3.5 or more (median and MAD) |
 | `one_way` | Many interactions to the owner with no response | 5 or more in 3 or more posts |
 | `tight_group` | Groups of other accounts with mutual links | cliques of 3 or more |
-| `co_action` | Pairs of accounts that reply to or quote the same owner posts at the same minutes, more frequently than their reply times explain | 3 or more posts in 10 minutes, Poisson test against the latency distribution, Bonferroni for all pairs |
+| `co_action` | Pairs of accounts that reply to or quote the same owner posts at the same minutes, more frequently than their reply times explain | 3 or more posts in 10 minutes, Poisson test against the latency distribution, Bonferroni for the pairs that share 3 or more posts (a pair with fewer cannot reach the test) |
 | `profile_change` | A handle or display-name change that makes an account look like the owner or a known account, or many handle changes | lookalike match after the change and not before, or 3 or more handles |
 | `mass_tagging` | An account that tags many accounts with no link to each other, a new set in each post | 3 or more posts with 4 or more tags, 10 or more tagged, 50 % or less tagged again, 20 % or less linked |
 | `community_anomaly` | A Louvain community (owner removed) with members made in the same weeks | 4 or more in 30 days, binomial test against the other accounts, Bonferroni for all windows |
@@ -448,7 +452,9 @@ A cell from X that starts with `=`, `+`, `-`, or `@` gets an apostrophe, so a sp
 
 1. **A test proved it for this use.** The V5 test ran Sigma 4.0.4 with 10,000 nodes and 40,000 edges, inline JavaScript, and a gzip plus base64 payload from `file://`, in a 1.21 MB file. Shortest path worked (research §6, section 3.4).
 2. **The payload encoding is a security control.** Base64 text cannot contain `</script>`, so a bio from X cannot close the script element (SR-05). After decoding, all text goes into the page through `textContent` (SR-02).
-3. **A strict Content Security Policy.** The template has a `<meta http-equiv="Content-Security-Policy">` with `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'` (SR-09). If an injection gets through the other controls, the CSP does not let the page load a script or send data out. Slice 6 adjusts the policy if Sigma must have more, and TSC-32 tests it.
+3. **A strict Content Security Policy.** The template has a `<meta http-equiv="Content-Security-Policy">` with `default-src 'none'; script-src 'sha256-...' (one hash for each script that runs); script-src-attr 'none'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'` (SR-09). The renderer calculates the four hashes (the three vendor files and `app.js`) from the page that it writes. The payload element does not run, so it has no hash. An injected inline script or event attribute does not run, so it cannot send data out by a fetch or by navigation. TSC-32 tests the policy.
+
+   Until 2026-11-03 the policy had `script-src 'unsafe-inline'`. A test showed that an injected inline script could send data out by navigation, which `connect-src` does not control (review 20261103, C-01). The template has static `style` attributes, so `style-src` keeps `'unsafe-inline'`. No value from X goes into CSS.
 
 <!-- AI review 20261102-151135: openai — CSP missing (S-7) -->
 
@@ -498,15 +504,18 @@ A cell from X that starts with `=`, `+`, `-`, or `@` gets an apostrophe, so a sp
 |---|---|---|
 | `store.sqlite`: interactions, profiles, `profile_history`, `nodes`, `node_groups`, the snapshot tables, `edges`, `rule_results`, `node_states`, the calibration tables | Indexes on user ID and post ID | Delete rows in one transaction |
 | Export files (FR-51) | `export_members(export_id, user_id)` and `exports(export_id, path)`, and a scan of each listed file | Delete each file that has the ID. The owner exports again. |
-| Raw cache | `cache_index(file, user_ids, post_ids)` | Rewrite each file without the objects that match the ID (scrub), and update the index |
+| Raw cache | `cache_index(file, user_ids, post_ids)`, and a scan of the text of each file (an ID can be only in a URL or in model text) | Rewrite each file without the objects that match the ID (scrub), and update the index |
 | Rendered HTML files | `render_members(render_id, user_id, post_id)` and `renders(render_id, path)`. The `evidence_json` of a finding can hold post IDs, so each ID from a finding is also a `post_id` row. The tool also examines map files in the renders folder that `renders` does not list. | Delete each file that has the ID. Then make a new render of the newest run without the ID. |
-| Logs | Not necessary: logs hold no names, bios, or text, and hold IDs only as HMAC-SHA256 with a local key | None |
+| Logs | Not necessary: logs hold no names, bios, or text, and hold IDs only as HMAC-SHA256 with a local key. This includes `since_id`, `until_id`, and the pagination tokens. | None |
+| The handle of a deleted user | The handles in `profiles` and `profile_history`, read before the rows go | In the store, the cache, and the HTML files, replace `@handle`, the handle in a URL path, and a value equal to the handle. Delete the provisional ID `h:<handle>` too. |
 | `config/overrides.yaml` | User ID | Remove entries for a deleted user |
 | `findings` table | `members_json` and `evidence_json` | Remove the user from each finding. Delete a finding with fewer than 2 members left, or a finding about only that user. |
 
 <!-- AI review 20261102-151135: grok — render regeneration contract (A-1), gemini — cache scrub (A-2), openai — logs and deletion (S-8) -->
 
 The tool reads the `render_members` and `export_members` index before it deletes the store rows, because the store deletion also removes the index rows. A `--redact` render has no IDs in it, so only the index finds it.
+
+The command refuses an ID that is not a number (or `h:<handle>` for a user) before it changes data. An empty ID found each row and damaged the store (review 20261103, A-01).
 
 **The deletion sweep (v0.2, DR-05).** `visualx sweep` sends each stored post ID to `GET /2/tweets?ids=` (100 for each call). The tool deletes a post that comes back as "not found", with the same deletion procedure. It only counts an authorization error (a protected or suspended account), because that error does not prove a deletion.
 
@@ -521,6 +530,8 @@ The sweep is a paid call: it shows an estimate, asks for approval, reserves the 
 ## 12. AD-11: Text retention
 
 **Decision:** the private store keeps the text of collected posts. The page does not show post text in v0.1. Deletion covers the text. The configuration option `retain_text = false` drops the text after `score` and keeps only `text_hash`, the normalized-text hash, and the URL domains.
+
+`retain_text = false` also removes the text from the raw cache files. A row with domains only has `field_status["url_paths"] = absent`, so the same-link test (B02) does not use it.
 
 <!-- AI review 20261102-151135: openai — text retention left open (S-9) -->
 
@@ -549,12 +560,12 @@ VISION §6 records the owner's decision and accepted risk. The design applies it
 | Threat | Asset | Control |
 |---|---|---|
 | T1. A hostile X user puts HTML or script in a display name, a bio, or a URL. | The owner's browser | Payload encoding (SR-05), `textContent` only (SR-02), URL scheme check (SR-07), strict CSP (SR-09), no X values in CSS. Tests TSC-20, TSC-32. |
-| T2. A supply-chain attack changes a vendor JavaScript file. | The page and the owner's browser | Tarball `integrity` check and `VENDOR.lock` hashes (SR-04, TSC-31) |
-| T3. Another process or person on the workstation reads the tokens. | X account access, X credits | Windows Credential Manager (SR-01). No tokens in files or logs (TSC-24). |
-| T4. A device on the local network sends a forged OAuth callback. | The authorization code | Listener on 127.0.0.1, `state` check, strict request checks, one callback only (IR-03, TSC-27) |
+| T2. A supply-chain attack changes a vendor JavaScript file. | The page and the owner's browser | Tarball `integrity` check and `VENDOR.lock` hashes (SR-04, TSC-31). The first fetch has no hash to compare with: it trusts TLS to registry.npmjs.org. After that, `VENDOR.lock` in git is the reference. |
+| T3. Another process or person on the workstation reads the tokens. | X account access, X credits | Windows Credential Manager (SR-01). The tool refuses a keyring backend that writes to a file. No tokens in files or logs (TSC-24). The log key `data/log_hmac.key` has only the ACL of the user profile folder. |
+| T4. A device on the local network sends a forged OAuth callback. | The authorization code | Listener on 127.0.0.1 with exclusive use of the port (a second program cannot bind it on Windows), `state` check, strict request checks, a 5 s socket timeout, one callback only (IR-03, TSC-27) |
 | T5. A bug or a large plan spends too much money. | X credits | Plan with estimate, approval at each step, cap reservation before each call (AD-04). X Console spend limit as the external hard limit. |
 | T6. A user sends a deletion request, and the data stays in a derived file. | Compliance with the X terms | AD-10, TSC-09 |
-| T7. Someone shares the HTML file. | Third parties on the map | **v0.1:** warnings only, not controls (the page header and the README). **v0.2:** `visualx render --redact` writes a file with the structure only: no handle, name, user ID, profile field, topic, signal state, rule result, or finding. Accounts are "Account n" in a random sequence, so you can show this file to other persons. |
+| T7. Someone shares the HTML file. | Third parties on the map | **v0.1:** warnings only, not controls (the page header and the README). **v0.2:** `visualx render --redact` writes a file with the structure only: no handle, name, user ID, profile field, topic, signal state, rule result, or finding. Accounts are "Account n" in a secret random sequence, and the link times are full days with no date (review 20261103, C-02 and C-03). |
 | T8. The rule engine mislabels a person. | Third parties, and the owner's judgment | Causes for each state, profile rules alone cannot give `many_signals`, owner overrides, calibration in v0.2 |
 
 <!-- AI review 20261102-151135: openai — header warning is not a control (S-14) -->
@@ -575,7 +586,7 @@ The `stage_runs` and `renders` tables serve as the manifest: window, sources, co
 
 A stop does not cause data loss: the cursor and the cache let the next run pick up where this one left off.
 
-**Cost.** Only `collect` spends money.
+**Cost.** Only `collect`, `sweep`, and `auth status` spend money. Each paid call has a row in the cost ledger.
 
 **Configuration.** `config/visualx.toml` (window, cap, unit prices, billing assumptions, weights, core view size, colors, `retain_text`, cache retention), `config/rules.yaml`, `config/overrides.yaml`, `config/allowlist.yaml`. The data folder is not in version control (DR-07).
 
@@ -709,7 +720,7 @@ sequenceDiagram
 
 **Slice 0 (spikes, no product):** the paid API probe ($5 cap) for OQ-01, OQ-02, and the readability of `verified_type` and `like_count`. **Also the proof that actual API responses map to the `Interaction` model for all four types.** The browser probe for frame rate at 5k and 10k nodes in Edge, Chrome, and Firefox.
 
-**v0.1:** everything in this document but the v0.2 list below, with 30 rules (all rules of AD-08 but B06) and the 12 pattern detectors of AD-08. The owner moved these items into v0.1 from v0.2 or v0.3: the Grok adapter (FR-09), incremental collection (FR-08), 6 starter rules (FR-56), the in-page layout (FR-58, with no worker), seed accounts (FR-07), calibration (FR-38), and color by community (Louvain in the page).
+**v0.1:** everything in this document but the v0.2 list below, with the rules of AD-08 (`V01_RULE_IDS` in `score/engine.py` lists 17 of them, and the rule file has 31 with B06 off when there is no feed) and the 12 pattern detectors of AD-08. The owner moved these items into v0.1 from v0.2 or v0.3: the Grok adapter (FR-09), incremental collection (FR-08), 6 starter rules (FR-56), the in-page layout (FR-58, with no worker), seed accounts (FR-07), calibration (FR-38), and color by community (Louvain in the page).
 
 **v0.2 (code written 2026-11-03):**
 

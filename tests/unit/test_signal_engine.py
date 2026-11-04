@@ -327,3 +327,35 @@ def test_score_needs_build_stage(tmp_path):
     st = make_store(tmp_path, with_build=False)
     with pytest.raises(StaleError):
         score(tmp_path, store=st)
+
+
+def test_override_to_some_signals_has_a_cause_row(tmp_path):
+    # Invariant 5 (review 20261103, B-06): an override that sets some_signals on an
+    # account with no rule result now has the owner's decision as its cause.
+    ov = [{"user_id": ACC, "state": "some_signals", "note": "Asked me for money"}]
+    s = score(tmp_path, overrides=ov)
+    assert s.states[ACC] == "some_signals"
+    hit = s.hit("OVERRIDE")
+    assert hit["points"] == 0 and hit["family"] == "owner"
+    assert hit["cause"] == "You set this state in overrides.yaml: Asked me for money"
+    assert all(r["points"] == 0 for r in s.results[ACC].values())  # no rule fired, only the cause row
+
+
+def test_override_note_with_a_forbidden_word_stays_out_of_the_cause(tmp_path):
+    ov = [{"user_id": ACC, "state": "many_signals", "note": "a bot, I think"}]
+    s = score(tmp_path, overrides=ov)
+    assert s.hit("OVERRIDE")["cause"] == "You set this state in overrides.yaml"
+    assert s.notes[ACC] == "a bot, I think"
+
+
+def test_missing_source_with_no_hit_is_a_missing_input(tmp_path):
+    # Invariant 10 (B-07): B04 reads the bio and the replies. The replies have no
+    # phrase, but the bio is absent, so "did not fire" would be a made-up result.
+    p = profile(description=None)
+    s = score(tmp_path, profiles=[ego_profile(), p], interactions=[interaction(text="nice talk today")])
+    assert "B04" not in s.fired()
+    assert "description" in s.skipped().get("B04", set())
+    # A hit in the source that is there still fires the rule.
+    s2 = score(tmp_path / "b", profiles=[ego_profile(), p],
+               interactions=[interaction(text="claim your crypto giveaway now")])
+    assert "B04" in s2.fired()

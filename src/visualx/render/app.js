@@ -7,7 +7,9 @@
  * - A URL from X becomes a link only when its scheme is http: or https:.
  * - Colors come only from the payload "cfg" block (configuration), checked
  *   against #RRGGBB before use, or from the constant palettes in this file.
- *   No value from X goes into a style, a class name, or an attribute.
+ *   No value from X goes into a style or a class name. The only attributes
+ *   with a value from X are href (checked as above) and the user IDs in the
+ *   data-focus and data-path test hooks (digits or h:<handle>, as text).
  * - All Sigma API calls are in the SIGMA ADAPTER section, so that a Sigma
  *   version change touches one section (AD-09).
  * - No worker, no blob: URL, no network. The layout runs in
@@ -305,11 +307,14 @@
     function hasTopic(i, t) { return (TC[i] && TC[i].indexOf(t) >= 0) || TI[i] === t; }
     // Changes since the earlier snapshot (snapshot.py). CH is null with no earlier snapshot.
     var CH = D.meta.changes || null;
+    var NOT_SCORED = states.indexOf("not_scored");
     var CN = N.cn || [], CPS = N.cps || [], CMV = N.cmv || [], CTW = N.ctw || [], CRA = N.cra || [];
     function changeOf(i, kind) {
       if (kind === "new") { return CN[i] === 1; }
       if (kind === "state") { return CPS[i] !== null && CPS[i] !== undefined; }
-      if (kind === "up") { return CPS[i] !== null && CPS[i] !== undefined && N.st[i] > CPS[i]; }
+      // "More signals": a higher signal state. not_scored -> no_signals is not more
+      // signals: the account was not scored before (review 20261103, C-10).
+      if (kind === "up") { return CPS[i] !== null && CPS[i] !== undefined && CPS[i] !== NOT_SCORED && N.st[i] > CPS[i]; }
       if (kind === "moved") { return CMV[i] === 1; }
       if (kind === "tie") { return typeof CTW[i] === "number" && CTW[i] > 0; }
       if (kind === "rules") { return !!(CRA[i] && CRA[i].length); }
@@ -731,10 +736,6 @@
       buildLegend();
       SigmaView.refresh();
     }
-    function seededRandom(seed) {
-      var s = seed >>> 0;
-      return function () { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
-    }
 
     // ---- layout: presets, live ForceAtlas2, drag ----
     var fa2 = { running: false, iters: 0, perIter: 0, batch: 1, settingsDirty: true, settings: null, limit: 2000 };
@@ -1101,7 +1102,7 @@
     }
     // Hover restyles every node and link (the rest dim), which costs a full refresh.
     // During a pan the cursor crosses many nodes, so the highlight waits until the
-    // mouse button is up and the pointer rests (frame time at 5k nodes: 29 ms -> 15 ms).
+    // mouse button is up and the pointer rests (frame time at 5k nodes: 29 ms -> 18 ms).
     var hoverTimer = null, pointerDown = false, HOVER_DELAY_MS = 90;
     function setHover(i) {
       if (hoverTimer !== null) { clearTimeout(hoverTimer); hoverTimer = null; }

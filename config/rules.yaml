@@ -150,14 +150,18 @@ rules:
     signal: scam_phrase
     when: {eq: true}
     points: 2
+    # Phrases of more than one word, or a word with almost no ordinary use
+    # ("airdrop"). "wallet", "giveaway", and "dm me" alone matched ordinary
+    # replies such as "use a hardware wallet" (review 20261103, B-11).
     params:
       phrases:
         - airdrop
-        - giveaway
-        - dm me
+        - crypto giveaway
+        - dm me for
         - recover your funds
         - recover your account
-        - wallet
+        - connect your wallet
+        - wallet recovery
         - investment manager
         - seed phrase
         - claim your reward
@@ -227,13 +231,20 @@ rules:
     when: {eq: true}
     points: 6
     hard: true
+    # Hard only for a strong match (review 20261103, B-01): a handle that looks
+    # the same at any age, or a young account with a near name. Same lookalike
+    # test as I02 and the lookalike detector.
     params:
+      min_handle_length: 5
+      long_handle_min_length: 9
       max_handle_edit_distance: 2
+      min_name_key_length: 8
+      young_account_days: 365
     cause: "Name looks like your account @{ego_handle}"
 
   # -- v0.2 starter rules (FR-56) ---------------------------------------------
-  # B06 (known-bad domain from a threat feed) is not in this file: FR-56 needs a
-  # feed with recorded terms and a size limit, and no such feed is chosen yet.
+  # B06 (known-bad domain from a threat feed) is above, after B05. It is off until
+  # config/threat_domains.txt exists, with the terms of the feed in feed_terms (FR-56).
 
   - id: P02
     family: profile

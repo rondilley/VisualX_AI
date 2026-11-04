@@ -45,3 +45,18 @@ def test_cli_stage_order_message(tmp_path):
     r = CliRunner().invoke(app, ["analyze", "--config", str(tmp_path / "config")])
     assert r.exit_code == 1
     assert "visualx build" in r.output
+
+
+def test_cli_auth_status_asks_before_the_paid_call(tmp_path):
+    # A-19 (review 20261103): no approval, no call, no ledger row.
+    cfg, store, cache, log = make_env(tmp_path)
+    r = CliRunner().invoke(app, ["auth", "status", "--config", str(tmp_path / "config")], input="n\n")
+    assert r.exit_code != 0 and "Not approved" in r.output
+    assert store.q("SELECT * FROM cost_ledger") == []
+
+
+def test_cli_delete_refuses_an_empty_id(tmp_path):
+    # A-01 (review 20261103) at the command line.
+    make_env(tmp_path)
+    r = CliRunner().invoke(app, ["delete", "--config", str(tmp_path / "config"), "--user-id", ""])
+    assert r.exit_code != 0 and "not a valid user ID" in r.output

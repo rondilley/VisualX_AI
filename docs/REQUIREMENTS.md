@@ -71,7 +71,7 @@ With seed accounts (FR-07, off by default), the tool also reads the recent posts
 |---|---|---|---|
 | FR-12 | Before each paid collection step, the tool MUST show an estimate of the resource count and the cost in USD. It MUST also show the unit prices that it used and each billing assumption that is not verified. | MVP | VISION Bet 4, REV S-13 |
 | FR-13 | The tool MUST have a dry-run mode that calculates the estimate and makes no paid call. | MVP | VISION Bet 4 |
-| FR-14 | The tool MUST stop before a call that can push the cost above the spend cap that the owner set for the run. | MVP | VISION Bet 4, V1-R1 |
+| FR-14 | The tool MUST stop before a call that can push the cost above the spend cap that the owner set for the run. For the X API, the tool reserves the maximum cost of each call before the call. The Grok source cannot do this, because xAI has no limit on the posts that one request fetches. It stops before a request when the spend plus the reservation is above the cap, so one request can go above the cap (owner decision 2026-11-02). | MVP | VISION Bet 4, V1-R1 |
 | FR-15 | The tool MUST record the actual resource count and the calculated actual cost of each step, and show the difference from the estimate. | MVP | VISION §7 item 1 |
 | FR-16 | Unit prices and billing assumptions MUST be configuration values, not constants in code. | MVP | V1-R1 ("prices are subject to change") |
 

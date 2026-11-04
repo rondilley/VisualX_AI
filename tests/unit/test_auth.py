@@ -285,3 +285,95 @@ def test_status_calls_users_me(kr: MemoryKeyring, cfg: Config):
 def test_empty_client_id_is_an_error(kr: MemoryKeyring, tmp_path: Path):
     with pytest.raises(AuthError, match="client_id"):
         auth.login(Config(root=tmp_path, raw={"owner": {"client_id": ""}}), lambda u: True, timeout=1)
+
+
+# -- Owner check for commands that write the owner (review 20261103, A-06) --
+
+
+def _owner_env(tmp_path: Path):
+    from tests.helpers import make_env
+
+    cfg, store, _cache, _log = make_env(tmp_path)
+    cfg.raw.setdefault("owner", {})["handle"] = "Ron_Dilley"
+    return cfg, store
+
+
+def test_record_owner_refuses_a_handle_that_is_not_the_config_owner(tmp_path: Path):
+    cfg, store = _owner_env(tmp_path)
+    with pytest.raises(AuthError, match="owner.handle"):
+        auth.record_owner(cfg, store, "555", "someone_else")
+    assert store.ego_id is None
+
+
+def test_record_owner_refuses_a_store_of_a_different_account(tmp_path: Path):
+    cfg, store = _owner_env(tmp_path)
+    store.set_meta("ego_user_id", "100")
+    with pytest.raises(AuthError, match="owner account of this store"):
+        auth.record_owner(cfg, store, "555", "Ron_Dilley")
+    assert store.ego_id == "100"
+
+
+def test_record_owner_writes_the_owner_and_rekeys_a_provisional_owner(tmp_path: Path):
+    cfg, store = _owner_env(tmp_path)
+    store.set_meta("ego_user_id", "h:ron_dilley")
+    auth.record_owner(cfg, store, "100", "Ron_Dilley")
+    assert store.ego_id == "100" and store.get_meta("ego_handle") == "Ron_Dilley"
+    auth.record_owner(cfg, store, "100", "Ron_Dilley")  # the same owner again is allowed
+    assert store.ego_id == "100"
+
+
+# -- P3 items of review 20261103 ------------------------------------------------
+
+
+def test_listener_serves_the_callback_after_a_client_that_sends_nothing():
+    # A-17: a connection with no request no longer blocks the callback until wait() stops.
+    import socket
+    import threading
+
+    lst = CallbackListener(state="s1").start()
+    try:
+        idle = socket.create_connection(("127.0.0.1", lst.port))
+        t = threading.Thread(target=lambda: _get(f"{lst.redirect_uri}?code=c1&state=s1"), daemon=True)
+        t.start()
+        assert lst.wait(30) == "c1"
+        idle.close()
+    finally:
+        lst.stop()
+
+
+def test_listener_port_in_use_is_an_auth_error():
+    # A-29: the OSError of a used port becomes a message.
+    first = CallbackListener(state="s1").start()
+    try:
+        with pytest.raises(AuthError, match="cannot use"):
+            CallbackListener(state="s2", port=first.port)
+    finally:
+        first.stop()
+
+
+class PlaintextKeyring(MemoryKeyring):
+    """A backend that has the name of a backend that writes secrets to a file."""
+
+
+def test_keyring_that_writes_a_file_is_refused(cfg: Config):
+    # A-20: tokens go only into the Credential Manager.
+    prev = keyring.get_keyring()
+    keyring.set_keyring(PlaintextKeyring())
+    try:
+        with pytest.raises(AuthError, match="keyring"):
+            auth.get_access_token(cfg)
+    finally:
+        keyring.set_keyring(prev)
+
+
+def test_cli_revoke_reports_what_happened(kr: MemoryKeyring, tmp_path: Path):
+    # A-18: with no stored token, the command does not say "Tokens removed".
+    from typer.testing import CliRunner
+
+    from tests.helpers import make_env
+    from visualx.cli import app
+
+    make_env(tmp_path)
+    r = CliRunner().invoke(app, ["auth", "revoke", "--config", str(tmp_path / "config")])
+    assert r.exit_code == 0, r.output
+    assert "Tokens removed" not in r.output and "No token was in the Credential Manager." in r.output

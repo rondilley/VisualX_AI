@@ -37,7 +37,7 @@ flowchart LR
     Render --> Page
 ```
 
-Only the `collect` stage spends money. It shows the cost of each step before the step starts, and it stops before your spend cap. Every other stage reads local files, so you can change rules or weights and re-render for free.
+Only `collect`, `sweep`, and `auth status` spend money. Each shows the cost before the call, and `collect` and `sweep` stop before your spend cap. Every other stage reads local files, so you can change rules or weights and re-render for free.
 
 ## Runtime
 
@@ -46,7 +46,7 @@ Only the `collect` stage spends money. It shows the cost of each step before the
 | Operating system | Windows 11 |
 | Python | 3.12 |
 | Main libraries | python-igraph (metrics and layout), httpx, keyring, Jinja2, PyYAML, Typer |
-| Page | Sigma.js 4.0.4 and graphology 0.26.0, inline in the file, pinned in `src/visualx/render/vendor/VENDOR.lock` |
+| Page | Sigma.js 4.0.4 and graphology 0.26.0, inline in the file, pinned in `src/visualx/render/vendor/VENDOR.lock`. The page needs a current Edge or Chrome (WebGL and `DecompressionStream`). |
 | Data access | Official X API v2 (default), pay-per-use, OAuth 2.0 with PKCE. Optional: xAI Grok `x_search` (`--source grok`). |
 
 ## Install and test
@@ -142,7 +142,7 @@ visualx sweep --limit 500 --cap 3                         # paid: check the 500 
 - **Recency decay (FR-20).** Set `half_life_days` in `[weights]` (for example 90) to give earlier interactions less weight. 0 (the default) is off.
 - **Rule B06.** Put one domain on each line of `config/threat_domains.txt`, from a threat feed that you select. Write the terms of use of the feed in `feed_terms` of rule B06 in `config/rules.yaml`. With no file, B06 is off.
 - **Exports (FR-51).** The export files hold no signal state, rule result, or finding. They describe third parties, so keep them private. `visualx delete` also deletes each export file that holds the ID.
-- **Redacted map.** `render --redact` writes `map_<id>_redacted.html` with no handle, name, ID, profile, topic, state, or finding. Use it when you show the map to other persons.
+- **Redacted map.** `render --redact` writes `map_<id>_redacted.html` with no handle, name, ID, profile, topic, state, or finding. The account sequence is random, and the file shows no dates. Use it when you show the map to other persons. A person who knows your network can possibly identify some accounts from the structure.
 - **Snapshots (FR-61).** Each render keeps a snapshot. After the next collection, the map shows what changed: the "Changes" card in the Overview, the "Changes since the last snapshot" filter, a "new" mark on new findings, and a "Since" part in the account panel. `visualx snapshot list` lists the snapshots, and `visualx snapshot diff` prints the counts of the changes (no names).
 - **Sweep (DR-05).** The sweep sends your stored post IDs to X in calls of 100 and deletes the posts that X reports as not found. Each post ID costs $0.005. On 2026-11-03 the store had 3,252 post IDs: $16.27 for a full sweep. `--limit` checks the oldest posts first, and the next sweep continues after them.
 
@@ -185,12 +185,13 @@ The score stage runs 12 detectors across accounts. Each finding goes in the Find
 - `profile_change` compares fetches of one account. Its history starts with the first collection after 2026-11-03, so it can fire only after two collections.
 - `co_action` uses replies and quotes to your posts. It has almost no input when a small number of accounts reply to you.
 - `community_anomaly` and `mass_tagging` work best with seed accounts (`--seeds`).
-- The measured recall and precision of each detector are in `background/2026-11-03_detector_validation.md`. On held-out benchmark data the 4 network detectors have 96 % to 100 %, and `creation_cluster` has the lowest recall (43 %).
+- The measured recall and precision of each detector are in `background/2026-11-03_detector_validation.md`. The numbers come from a synthetic benchmark that the same author wrote, so they show that the logic works, not the precision on your network. On held-out benchmark data the 4 network detectors have 96 % to 100 %, and `creation_cluster` has the lowest recall (74 %). Your own labels (`visualx calibrate`) measure the precision on your network.
 
 ### Grok as a second source (FR-09)
 
 ```text
 # the xAI key comes from xai.key.txt in the project folder (or: visualx auth grok-key)
+# Grok needs the owner from an X sign-in first: one 'visualx auth status' ($0.010) or one X API collect
 visualx collect --source grok --dry-run
 visualx run --source grok --days 30 --cap 5
 ```
@@ -208,7 +209,9 @@ visualx delete --user-id 1234567890       # repeat --user-id or --post-id for mo
 visualx delete --post-id 1850000000000000000
 ```
 
-The command removes the ID from the store tables and from the raw cache files. It also removes the override entry, deletes each rendered HTML file and each export file that holds the ID, and makes a new render. Then it searches all of these locations again, with the HTML data decoded, and stops with an error if it finds the ID (TSC-09). The logs hold IDs only as HMAC values. The command cannot find copies that you moved out of the `data/` folder.
+Each ID must be a number. `--user-id` also accepts a provisional ID `h:<handle>`. The command refuses an empty or incorrect ID before it changes data.
+
+The command removes the ID from the store tables and from the raw cache files. This includes an ID that is only in a URL or in text. It also removes the override entry, deletes each rendered HTML file and each export file that holds the ID, and makes a new render. Then it searches all of these locations again, with the HTML data decoded, and stops with an error if it finds the ID (TSC-09). The logs hold IDs only as HMAC values. The command cannot find copies that you moved out of the `data/` folder.
 
 ## Privacy
 

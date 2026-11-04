@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from tests.unit.xapi_test_server import XApiTestServer, fixture
@@ -295,3 +296,38 @@ def test_empty_location_left_out_by_x_is_empty_when_fields_requested():
     assert full.location == "" and full.field_status["location"] == "present"
     partial = map_user({"id": "9", "username": "a"}, "e")
     assert partial.location is None and partial.field_status["location"] == "absent"
+
+
+class _ScriptedTransport(httpx.BaseTransport):
+    """Raises the given errors in order, then answers 200 with an empty user body."""
+
+    def __init__(self, errors):
+        self.errors = list(errors)
+        self.calls = 0
+
+    def handle_request(self, request):
+        self.calls += 1
+        if self.errors:
+            raise self.errors.pop(0)
+        return httpx.Response(200, json={"data": {"id": "1", "username": "x"}})
+
+
+def test_client_retries_only_errors_before_the_request_is_sent():
+    # A-07 (review 20261103): a connect error never reached X, so a retry is safe.
+    req = httpx.Request("GET", "https://api.x.com/2/users/me")
+    tr = _ScriptedTransport([httpx.ConnectError("refused", request=req)])
+    client = XApiClient(token_provider=lambda: "t", sleep=lambda s: None, http=httpx.Client(transport=tr))
+    body, _ = client.get("/2/users/me", {})
+    assert body["data"]["id"] == "1" and tr.calls == 2
+
+
+@pytest.mark.parametrize("err", [httpx.ReadTimeout, httpx.RemoteProtocolError, httpx.ReadError])
+def test_client_does_not_retry_after_the_request_was_sent(err):
+    # A-07: X can bill a request that it got. A retry would be a second billed
+    # call under one reservation.
+    req = httpx.Request("GET", "https://api.x.com/2/users/me")
+    tr = _ScriptedTransport([err("lost", request=req)])
+    client = XApiClient(token_provider=lambda: "t", sleep=lambda s: None, http=httpx.Client(transport=tr))
+    with pytest.raises(XApiError, match="not retried") as ei:
+        client.get("/2/users/me", {})
+    assert ei.value.status is None and tr.calls == 1

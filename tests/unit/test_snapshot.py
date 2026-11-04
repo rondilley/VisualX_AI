@@ -59,7 +59,8 @@ def test_snapshot_diff_finds_each_kind_of_change(tmp_path):
     c = d["counts"]
     assert (c["new_accounts"], c["gone_accounts"], c["community_moves"], c["new_findings"]) == (1, 1, 1, 1)
     assert c["state_transitions"] == {"not_scored->some_signals": 1}
-    text = snap.diff_text(d, "a", "b")
+    # The snapshot IDs hold the clock time, which can contain "13" or "25".
+    text = snap.diff_text(d, "a", "b").replace(a, "").replace(b, "")
     for x in ("acct", "Name ", '"20"', " 20 ", "13", "25"):
         assert x not in text  # counts only (invariant 8)
 

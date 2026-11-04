@@ -18,7 +18,7 @@ from . import __version__
 from .cache import Cache
 from .config import Config, ConfigError, load
 from .logs import RunLog, load_hmac_key
-from .store import LockError, StaleError, Store, lock, new_id
+from .store import LockError, StaleError, Store, lock, new_id, now_iso
 
 app = typer.Typer(add_completion=False, no_args_is_help=True, help="VisualX_AI: a private map of your X network.")
 auth_app = typer.Typer(no_args_is_help=True, help="Sign in to X, show the account, or remove the tokens.")
@@ -99,21 +99,38 @@ def auth_login(config: str = CONFIG_OPT) -> None:
 
 
 @auth_app.command("status")
-def auth_status(config: str = CONFIG_OPT) -> None:
+def auth_status(
+    config: str = CONFIG_OPT,
+    yes: bool = typer.Option(False, "--yes", help="Do not ask for approval of the paid call."),
+) -> None:
     """Make one live GET /2/users/me call (one user read, $0.010) and show the owner account."""
     from . import auth
-    from .collect.xapi import XApiClient
+    from .collect.xapi import XApiClient, XApiError
 
     ctx = Ctx(config)
+    price = float(ctx.cfg.get("prices.user_read"))
+    # A-19 (review 20261103): a paid call gets the owner's approval and a ledger row.
+    if not yes and not typer.confirm(f"One paid call: GET /2/users/me, 1 user read at ${price:.3f}. Continue?"):
+        _fail("Not approved. No call was made.")
     try:
-        client = XApiClient(token_provider=lambda: auth.get_access_token(ctx.cfg),
-                            on_refresh=lambda: auth.refresh_access_token(ctx.cfg), log=ctx.log)
-        me = auth.status(ctx.cfg, client)
+        with _locked(ctx):
+            lid = ctx.store.conn.execute(
+                "INSERT INTO cost_ledger(run_id,step,endpoint,billing_class,resources,unit_price,cost,reserved,"
+                "response_code,at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (ctx.run_id, 0, "/2/users/me", "user_read", 0, price, price, price, None, now_iso()),
+            ).lastrowid
+            client = XApiClient(token_provider=lambda: auth.get_access_token(ctx.cfg),
+                                on_refresh=lambda: auth.refresh_access_token(ctx.cfg), log=ctx.log)
+            try:
+                me = auth.status(ctx.cfg, client)
+            except XApiError as e:
+                if e.status is not None:
+                    ctx.store.conn.execute("UPDATE cost_ledger SET cost=0, response_code=? WHERE id=?", (e.status, lid))
+                raise auth.AuthError(str(e)) from e
+            ctx.store.conn.execute("UPDATE cost_ledger SET resources=1, response_code=200 WHERE id=?", (lid,))
+            auth.record_owner(ctx.cfg, ctx.store, str(me["user_id"]), str(me.get("handle") or ""))
     except auth.AuthError as e:
         _fail(str(e))
-    ctx.store.set_meta("ego_user_id", str(me["user_id"]))
-    if me.get("handle"):
-        ctx.store.set_meta("ego_handle", str(me["handle"]))
     typer.echo(f"Owner account: @{me.get('handle')} (ID {me['user_id']})")
 
 
@@ -139,8 +156,15 @@ def auth_revoke(config: str = CONFIG_OPT) -> None:
     from . import auth
 
     cfg = load(config)
-    auth.revoke(cfg)
-    typer.echo("Tokens removed.")
+    try:
+        res = auth.revoke(cfg)
+    except auth.AuthError as e:
+        _fail(str(e))
+    # A-18 (review 20261103): report what happened, not always "removed".
+    typer.echo("Revoked at X." if res["revoked_at_x"] else f"Not revoked at X: {res['error'] or 'no stored token'}.")
+    typer.echo("Removed from the Credential Manager." if res["deleted_from_keyring"] else "No token was in the Credential Manager.")
+    if res["error"]:
+        raise typer.Exit(1)
 
 
 # --------------------------------------------------------------------------- stages
@@ -249,7 +273,8 @@ def _score(ctx: Ctx) -> dict[str, Any]:
     out = run_score(ctx.cfg, ctx.store, ctx.log)
     if not ctx.cfg.get("data.retain_text", True):
         n = ctx.store.drop_text()
-        typer.echo(f"retain_text = false: removed the text of {n} interactions (AD-11).")
+        files = ctx.cache.drop_text()
+        typer.echo(f"retain_text = false: removed the text of {n} interactions and from {files} cache files (AD-11).")
     return out
 
 
@@ -392,10 +417,17 @@ def delete(
     no_rerender: bool = typer.Option(False, "--no-rerender", help="Do not make a new render after the deletion."),
 ) -> None:
     """Delete an ID from every location (DR-04, AD-10)."""
-    from .delete import delete_ids
+    from .delete import delete_ids, validate_ids
 
     if not user_id and not post_id:
         _fail("Give --user-id or --post-id.")
+    try:
+        if user_id:
+            validate_ids(list(user_id), "user")
+        if post_id:
+            validate_ids(list(post_id), "post")
+    except ValueError as e:
+        _fail(str(e))
     ctx = Ctx(config)
 
     def rerender() -> str | None:

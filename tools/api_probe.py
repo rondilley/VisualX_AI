@@ -33,9 +33,23 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from visualx import auth  # noqa: E402
-from visualx.collect.xapi import POST_PARAMS, USER_PARAMS, XApiClient, XApiError, map_post, map_retweeted_by, map_user  # noqa: E402
+from visualx.collect.xapi import (  # noqa: E402
+    POST_PARAMS,
+    USER_PARAMS,
+    XApiClient,
+    XApiError,
+    endpoint_template,
+    map_post,
+    map_retweeted_by,
+    map_user,
+)
 from visualx.config import load  # noqa: E402
 from visualx.logs import RunLog, load_hmac_key  # noqa: E402
+from visualx.store import Store, now_iso  # noqa: E402
+
+# The billing class of each probe call, for the cost ledger (review 20261103, A-30).
+CALL_CLASS = {"users_me": "user_read", "owner_tweets": "owned_read", "mentions": "owned_read",
+              "quote_tweets": "post_read", "retweeted_by": "user_read", "users_lookup": "user_read"}
 
 CAP = 5.00
 
@@ -137,11 +151,25 @@ def main() -> int:
                         on_refresh=lambda: auth.refresh_access_token(cfg), log=log)
     pseudo = Pseudo()
     calls: list[dict[str, Any]] = []
+    store = Store(cfg.store_path)
+    run_id = f"probe_{stamp}"
 
     def call(name: str, path: str, params: dict[str, Any]) -> dict[str, Any]:
+        # The paid calls of the probe go into the cost ledger too, with a reservation
+        # before the call, as in the collect plan (A-30).
+        cls = CALL_CLASS[name]
+        price = float(cfg.raw["prices"][cls])
+        most = int(params.get("max_results") or len(str(params.get("ids", "")).split(",")) or 1)
+        lid = store.conn.execute(
+            "INSERT INTO cost_ledger(run_id,step,endpoint,billing_class,resources,unit_price,cost,reserved,"
+            "response_code,at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (run_id, 0, endpoint_template(path)[0], cls, 0, price, most * price, most * price, None, now_iso()),
+        ).lastrowid
         try:
             body, headers = client.get(path, params)
         except XApiError as e:
+            if e.status is not None:
+                store.conn.execute("UPDATE cost_ledger SET cost=0, response_code=? WHERE id=?", (e.status, lid))
             calls.append({"name": name, "path": path, "error": str(e)})
             print(f"  {name}: error {e}")
             return {}
@@ -150,6 +178,8 @@ def main() -> int:
         count = len(body.get("data") or []) if isinstance(body.get("data"), list) else (1 if body.get("data") else 0)
         calls.append({"name": name, "path": path, "resources": count, "fields": field_inventory(body),
                       "errors": [e.get("title") for e in body.get("errors", [])]})
+        store.conn.execute("UPDATE cost_ledger SET resources=?, cost=?, response_code=200 WHERE id=?",
+                           (count, count * price, lid))
         print(f"  {name}: {count} objects")
         return body
 

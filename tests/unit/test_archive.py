@@ -322,3 +322,25 @@ def test_old_archive_without_tweet_wrapper(tmp_path):
     rep = run_import(cfg, store, log, write_dir(tmp_path / "old", files), "run_a", now=NOW)
     assert rep.files_used == ["data/account.js", "data/tweet.js"]
     assert edges(store) == {("reply", OWNER, "3001", "2500"), ("mention", OWNER, "3002", None)}
+
+
+def test_parse_js_accepts_a_trailing_semicolon():
+    # A-16 (review 20261103).
+    from visualx.collect.archive import parse_js
+
+    assert parse_js(b"window.YTD.tweets.part0 = [1, 2];\n", "data/tweets.js") == [1, 2]
+    assert parse_js(b"window.YTD.tweets.part0 = [3]", "data/tweets.js") == [3]
+    # A-25: a file with no ".partN" in the prefix.
+    assert parse_js(b"window.YTD.tweets = [4]", "data/tweets.js") == [4]
+
+
+def test_post_files_larger_than_the_total_limit_are_refused(tmp_path, monkeypatch):
+    # A-15 (review 20261103): all post files are in memory at the same time.
+    from visualx.collect import archive as A
+
+    monkeypatch.setattr(A, "MAX_POST_BYTES", 10)
+    cfg, store, log = env(tmp_path)
+    z = write_zip(tmp_path / "archive.zip", archive_files())
+    with pytest.raises(ArchiveError, match="more than the limit"):
+        run_import(cfg, store, log, z, "run_big", now=NOW)
+    assert store.interactions() == []

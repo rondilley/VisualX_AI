@@ -67,7 +67,7 @@ topic_rounds = 5
 
 [render]
 core_view_max_nodes = 2000      # FR-48: start in a core view above this node count
-size_mode = "weighted_degree"   # or "followers"
+size_mode = "weighted_degree"   # or "followers" or "activity"
 min_tie_weight = 0.0            # FR-23 default filter value
 
 [render.state_colors]           # Okabe-Ito hues on a dark background

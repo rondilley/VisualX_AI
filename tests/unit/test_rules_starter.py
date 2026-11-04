@@ -211,3 +211,13 @@ def test_lookalike_helpers():
     assert lookalike_match("rondilley", None, "someone", "Ron Dilley", {}) == ("handle_name_skeleton", 0)
     assert lookalike_match("tom_q", "Mike", "zed_k", "Mike", {}) is None  # short names are not a match
     assert lookalike_match("mike_a", None, "mike_b", None, {}) == ("handle_edit_distance", 1)
+
+
+def test_i02_cause_does_not_show_a_known_handle_with_a_forbidden_word(tmp_path):
+    # B-08 (review 20261103): the cause is checked at load time as a template only.
+    # A known account with the handle "Bots" put the word into a cause string (FR-31).
+    # ("bot" inside a longer handle such as "chatbot_lab" is not a whole word.)
+    s = i02(tmp_path, "B0ts", known_handle="Bots")
+    assert "I02" in s.fired()
+    assert s.hit("I02")["cause"] == "Name looks like @[name not shown]"
+    assert '"known":"Bots"' in s.hit("I02")["value_json"]

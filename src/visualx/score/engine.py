@@ -10,7 +10,8 @@ State computation (FR-31, FR-35)::
     a gate rule fires                                   -> not_scored
     an owner override exists                            -> override state
     a hard rule fires                                   -> many_signals
-    total >= many_min and a rule of a listed family fired -> many_signals
+    total >= many_min and a rule of a listed family fired
+      and the listed families give many_signals_min_family_points -> many_signals
     total >= some_min                                   -> some_signals
     else                                                -> no_signals
 
@@ -36,7 +37,7 @@ import yaml
 
 from ..config import Config, ConfigError
 from ..logs import RunLog
-from ..model import SIGNAL_STATES, STATE_LABELS, dumps
+from ..model import SIGNAL_STATES, dumps
 from ..store import Store
 from .patterns import (
     DETECTOR_INPUTS,
@@ -73,6 +74,10 @@ TOP_KEYS: frozenset[str] = frozenset({"bands", "rules", "patterns"})
 # FR-31, TSC-29: words that must not occur in state names, display text, or cause strings.
 FORBIDDEN_WORDS: tuple[str, ...] = ("legit", "risky", "bot", "scammer")
 
+# The cause row for an owner override (overrides.yaml). It has 0 points and no rule in rules.yaml.
+OVERRIDE_RULE_ID = "OVERRIDE"
+OVERRIDE_CAUSE = "You set this state in overrides.yaml"
+
 # TR-06: sensitive categories (X Developer Policy). A rule must not use these
 # as a field, a signal name, a parameter, or a keyword. The match is on whole
 # words (and a plural with "s"). This check finds only the known terms; the
@@ -96,11 +101,11 @@ SENSITIVE_TERMS: dict[str, tuple[str, ...]] = {
     ),
     "ethnicity": (
         "race", "racial", "ethnic", "ethnicity", "nationality", "hispanic", "latino", "latina",
-        "asian", "african", "caucasian", "arab", "indigenous", "skin color",
+        "asian", "african", "caucasian", "arab", "indigenous", "skin color", "racism", "racist",
     ),
     "sexuality": (
         "gay", "lesbian", "bisexual", "trans", "transgender", "queer", "lgbt", "lgbtq",
-        "homosexual", "sexual", "sexuality", "sexual orientation", "gender identity",
+        "homosexual", "sexual", "sexuality", "sexual orientation", "gender identity", "pride",
     ),
     "trade_union": ("union", "trade union", "labor union", "labour union", "unionist", "syndicate"),
 }
@@ -191,9 +196,17 @@ def sensitive_hits(text: str) -> list[tuple[str, str]]:
     return hits
 
 
+_FORBIDDEN_RE = re.compile(r"\b(" + "|".join(FORBIDDEN_WORDS) + r")s?\b", re.IGNORECASE)
+
+
 def forbidden_word_hits(text: str) -> list[str]:
-    low = text.casefold()
-    return [w for w in FORBIDDEN_WORDS if w in low]
+    """The forbidden words in ``text``, as whole words (a plural with "s" counts).
+
+    A substring match found "bot" in "both" and "robotics". A hostname from X in
+    a finding summary then stopped the score stage (review 20261103, B-02).
+    """
+    found = {m.group(1).casefold() for m in _FORBIDDEN_RE.finditer(text)}
+    return [w for w in FORBIDDEN_WORDS if w in found]
 
 
 def _rule_list(data: Any) -> list[Any]:
@@ -525,6 +538,11 @@ def _plain(v: Any) -> Any:
 def render_cause(rule: Rule, val: Value, extra: dict[str, Any]) -> str:
     fields: dict[str, Any] = {**rule.params, **extra, **val.fields, "value": val.value}
     fields = {k: _plain(v) for k, v in fields.items()}
+    # A field value can be text from X (for example the handle of a known account
+    # in I02 and I04). FR-31 applies to the whole cause string, so a value with a
+    # forbidden word does not go in; the value stays in value_json (review 20261103, B-08).
+    fields = {k: ("[name not shown]" if isinstance(v, str) and forbidden_word_hits(v) else v)
+              for k, v in fields.items()}
     try:
         return rule.cause.format_map(fields)
     except (KeyError, IndexError, ValueError) as e:
@@ -628,6 +646,11 @@ def evaluate_account(ruleset: RuleSet, account: Account, override: dict[str, Any
     used_override = override is not None and not gate_fired
     if used_override:
         note = str(override.get("note") or "")  # type: ignore[union-attr]
+        # Invariant 5: the state has its cause. The owner's decision is the cause,
+        # with 0 points (review 20261103, B-06). The note is the owner's own text;
+        # it goes into the cause only if it has no forbidden word (FR-31).
+        cause = OVERRIDE_CAUSE + (f": {note}" if note and not forbidden_word_hits(note) else "")
+        hits.append(RuleHit(OVERRIDE_RULE_ID, "owner", 0.0, dumps({"state": state, "note": note}), cause[:300], False))
     # Invariant 5: a computed state other than no_signals or not_scored has its causes.
     if not used_override and state in ("some_signals", "many_signals") and not any(h.points > 0 or h.hard for h in hits):
         raise RuntimeError(f"defect: state {state} without rule results")
@@ -779,6 +802,3 @@ def run_score(
     log.write("score_done", stage_run_id=sid, **counts)
     return {**counts, "stage_run_id": sid}
 
-
-def state_label(state: str) -> str:
-    return STATE_LABELS[state]

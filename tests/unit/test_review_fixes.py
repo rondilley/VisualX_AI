@@ -20,10 +20,10 @@ T = "2026-10-01T00:00:00.000Z"
 
 def _pipeline_env(tmp_path):
     cfg, store, cache, log = make_env(tmp_path)
-    store.set_meta("ego_user_id", "ego")
+    store.set_meta("ego_user_id", "100")
     store.set_meta("ego_handle", "owner")
-    store.put_profiles([profile("ego", handle="owner", name="Owner"), profile("a", handle="alpha", name="A")])
-    store.put_interactions([interaction("reply", "a", "ego", spost="1", tpost="0", at=T)])
+    store.put_profiles([profile("100", handle="owner", name="Owner"), profile("101", handle="alpha", name="A")])
+    store.put_interactions([interaction("reply", "101", "100", spost="1", tpost="0", at=T)])
     mark_stage(store, "collect")
     return cfg, store, cache, log
 
@@ -70,7 +70,7 @@ def test_finding_evidence_ids_are_indexed_as_post_ids(tmp_path):
     store.conn.execute(
         "INSERT INTO findings VALUES (?,?,?,?,?,?,?,?)",
         ("f1", "reply_burst", "Many accounts replied in a short time", "notable", "Summary",
-         '["a"]', '{"source_post_ids": ["987654321012"]}', "s1"),
+         '["101"]', '{"source_post_ids": ["987654321012"]}', "s1"),
     )
     path = run_render(cfg, store, log)
     rows = store.q("SELECT render_id FROM render_members WHERE post_id=?", ("987654321012",))
@@ -88,6 +88,6 @@ def test_orphan_render_file_with_the_id_is_deleted(tmp_path):
     path = run_render(cfg, store, log)
     orphan = path.with_name("map_copy_from_backup.html")
     shutil.copy(path, orphan)
-    rep = delete_ids(store, cache, tmp_path / "config", ["a"], "user", extra_files=[orphan])
+    rep = delete_ids(store, cache, tmp_path / "config", ["101"], "user", extra_files=[orphan])
     assert not orphan.exists()
     assert rep.remaining == []

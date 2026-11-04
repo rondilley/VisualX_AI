@@ -25,13 +25,37 @@ from typing import Any
 
 import yaml
 
-from .cache import Cache, _id_pattern
+from .cache import Cache, _id_pattern, handle_patterns, handle_sub
+from .render.render import PAYLOAD_RE  # the renderer owns the payload element form (A-23)
 from .score.calibrate import scrub_sheets, sheets_with
 from .store import Store
 
-PAYLOAD_RE = re.compile(
-    r'<script[^>]*id="vx-payload"[^>]*>\s*([A-Za-z0-9+/=\s]+?)\s*</script>', re.DOTALL
-)
+# An X user ID or post ID is a decimal number. A provisional user ID is
+# "h:<handle>", and an X handle has 1 to 15 letters, digits, or "_".
+_NUMERIC_ID = re.compile(r"[0-9]{1,25}")
+_PROVISIONAL_ID = re.compile(r"h:[A-Za-z0-9_]{1,15}")
+
+
+def validate_ids(ids: list[str], kind: str) -> list[str]:
+    """Return ``ids`` if each one has the form of an X ID. Raise ValueError if not.
+
+    An empty or malformed ID makes the LIKE match and the redaction pattern match
+    each row, and that damages the store (review 20261103, A-01).
+    """
+    if not ids:
+        raise ValueError("no ID was given")
+    bad = []
+    for i in ids:
+        s = i if isinstance(i, str) else ""
+        ok = _NUMERIC_ID.fullmatch(s) is not None or (kind == "user" and _PROVISIONAL_ID.fullmatch(s) is not None)
+        if not ok:
+            bad.append(repr(i)[:40])
+    if bad:
+        form = "a number or h:<handle>" if kind == "user" else "a number"
+        raise ValueError(f"not a valid {kind} ID (it must be {form}): " + ", ".join(bad))
+    return list(ids)
+
+
 
 
 @dataclass
@@ -91,6 +115,10 @@ def _delete_store_rows(store: Store, ident: str, kind: str) -> int:
                 ("DELETE FROM node_states WHERE user_id=?", 1),
                 ("DELETE FROM overrides WHERE user_id=?", 1),
                 ("DELETE FROM render_members WHERE user_id=?", 1),
+                # Step 6 keeps one cursor row for each seed user, keyed by the user ID.
+                # The redaction sweep must not see it: two redacted rows would collide
+                # on the (step, item) key (review 20261103, A-02).
+                ("DELETE FROM cursor WHERE item=?", 1),
             ]
         else:
             stmts = [
@@ -285,10 +313,20 @@ def delete_ids(
 ) -> DeleteReport:
     if kind not in ("user", "post"):
         raise ValueError("kind must be 'user' or 'post'")
+    ids = validate_ids(ids, kind)
     ego = store.ego_id
     if kind == "user" and ego in ids:
         raise ValueError("Deletion of the owner's own account ID is not supported. Delete the data folder.")
     rep = DeleteReport(ids=list(ids), kind=kind)
+    handles: set[str] = set()
+    if kind == "user":
+        # The handle is an identifier too (review 20261103, A-13). Read it before the
+        # profile rows go, and delete the provisional ID h:<handle> of the same account.
+        handles = _handles_of(store, ids)
+        ego_handle = (store.get_meta("ego_handle") or "").casefold()
+        handles = {h for h in handles if h.casefold() != ego_handle}
+        extra = [f"h:{h.casefold()}" for h in sorted(handles) if f"h:{h.casefold()}" not in ids]
+        ids = [*ids, *extra]
     for ident in ids:
         # Renders and exports first: they use the render_members and export_members index,
         # which _delete_store_rows removes.
@@ -312,8 +350,109 @@ def delete_ids(
                 f.unlink()
                 rep.renders_deleted.append(str(f))
     rep.cache_files_scrubbed = cache.scrub(set(ids))
+    if kind == "user":
+        # A redacted copy that the renders table does not list holds no ID, so no
+        # search can show whether it has the deleted account. It goes too (review
+        # 20261103, C-21). The rerender below makes the listed files again.
+        listed = {str(Path(r["path"]).resolve()) for r in store.q("SELECT path FROM renders")}
+        for f in extra_files or []:
+            if f.name.endswith("_redacted.html") and f.exists() and str(f.resolve()) not in listed:
+                f.unlink()
+                rep.renders_deleted.append(str(f))
+    if handles:
+        rep.redacted_cells += _redact_handles(store, handles)
+        rep.cache_files_scrubbed += cache.scrub_handles(handles)
+        for f in [Path(r["path"]) for r in store.q("SELECT path FROM renders")] + list(extra_files or []):
+            if f.exists() and _html_has_handle(f, handles):
+                f.unlink()
+                store.conn.execute("DELETE FROM renders WHERE path=?", (str(f),))
+                rep.renders_deleted.append(str(f))
     if rep.renders_deleted and rerender is not None:
         rep.rerendered = rerender()
     for ident in ids:
         rep.remaining += find_id(store, cache, ident, extra_files)
+    if handles:
+        rep.remaining += find_handles(store, cache, handles, extra_files)
     return rep
+
+
+def _handles_of(store: Store, ids: list[str]) -> set[str]:
+    """The handles that the store holds for these user IDs (profile and profile history)."""
+    out: set[str] = set()
+    for uid in ids:
+        if uid.startswith("h:"):
+            out.add(uid[2:])
+        for r in store.q("SELECT handle FROM profiles WHERE user_id=? AND handle IS NOT NULL", (uid,)):
+            out.add(str(r["handle"]).lstrip("@"))
+        for r in store.q("SELECT handle FROM profile_history WHERE user_id=? AND handle IS NOT NULL", (uid,)):
+            out.add(str(r["handle"]).lstrip("@"))
+    return {h for h in out if _HANDLE_RE.fullmatch(h)}
+
+
+_HANDLE_RE = re.compile(r"[A-Za-z0-9_]{1,15}")
+
+
+def _redact_handles(store: Store, handles: set[str]) -> int:
+    """Replace ``@handle`` and URL uses of the handles in text and JSON columns."""
+    pats = handle_patterns(handles)
+    n = 0
+    with store.tx() as c:
+        for table, cols in _text_columns(store).items():
+            if table in ("cache_index", "cache_ids", "meta"):
+                continue
+            for col in cols:
+                for h in handles:
+                    rows = c.execute(f"SELECT rowid, {col} FROM {table} WHERE {col} LIKE ?", (f"%{h}%",)).fetchall()
+                    for rowid, val in rows:
+                        new = val
+                        for pat in pats:
+                            new = pat.sub("[deleted]", new)
+                        if new != val:
+                            c.execute(f"UPDATE {table} SET {col}=? WHERE rowid=?", (new, rowid))
+                            n += 1
+    return n
+
+
+def _html_has_handle(path: Path, handles: set[str]) -> bool:
+    try:
+        html = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    texts = [json.dumps(p, ensure_ascii=False) for p in decode_payloads(html)]
+    return any(handle_sub(t, handles) != t for t in texts) or any(
+        f'"{h}"'.casefold() in t.casefold() for t in texts for h in handles)
+
+
+def find_handles(store: Store, cache: Cache, handles: set[str], extra_files: list[Path] | None = None) -> list[str]:
+    """Each location that still uses a deleted handle as an identifier (A-13)."""
+    pats = handle_patterns(handles)
+    hits: list[str] = []
+    for table, cols in _text_columns(store).items():
+        if table in ("cache_index", "cache_ids", "meta"):
+            continue
+        for col in cols:
+            for (val,) in store.conn.execute(f"SELECT {col} FROM {table} WHERE {col} IS NOT NULL").fetchall():
+                if any(p.search(str(val)) for p in pats) or str(val).lstrip("@").casefold() in {
+                        h.casefold() for h in handles}:
+                    hits.append(f"store:{table}.{col} (handle)")
+                    break
+    for p in sorted(cache.dir.glob("*.json.gz")):
+        with gzip.open(p, "rt", encoding="utf-8") as f:
+            body = json.load(f)
+        if json.dumps(_strings_changed(body, handles)) != "false":
+            hits.append(f"cache:{p.name} (handle)")
+    files = [Path(r["path"]) for r in store.q("SELECT path FROM renders")] + list(extra_files or [])
+    for f in files:
+        if f.exists() and _html_has_handle(f, handles):
+            hits.append(f"render:{f} (handle)")
+    return hits
+
+
+def _strings_changed(obj: Any, handles: set[str]) -> bool:
+    if isinstance(obj, dict):
+        return any(_strings_changed(v, handles) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_strings_changed(v, handles) for v in obj)
+    if isinstance(obj, str):
+        return handle_sub(obj, handles) != obj
+    return False

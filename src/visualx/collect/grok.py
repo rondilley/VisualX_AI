@@ -97,7 +97,15 @@ PROMPTS = {
 
 
 class GrokError(RuntimeError):
-    pass
+    """An xAI error. ``status`` is the HTTP status, or None if no response came (network error)."""
+
+    def __init__(self, msg: str, status: int | None = None):
+        super().__init__(msg)
+        self.status = status
+
+
+# Network errors before the request leaves this computer: safe to send again.
+_NOT_SENT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
 
 def snowflake_time(post_id: str) -> str | None:
@@ -172,6 +180,9 @@ class GrokClient:
             try:
                 r = self.http.post(url, json=body, headers={"Authorization": f"Bearer {self.key_provider()}"})
             except httpx.HTTPError as e:
+                if not isinstance(e, _NOT_SENT_ERRORS):
+                    # xAI may have run and billed the request; do not send it again (A-07, A-09).
+                    raise GrokError(f"network error after the request was sent: {type(e).__name__}") from e
                 if attempt == 3:
                     raise GrokError(f"network error: {type(e).__name__}") from e
                 self.sleep(2 ** (attempt + 1))
@@ -182,20 +193,21 @@ class GrokClient:
             if r.status_code == 429:
                 wait = float(r.headers.get("retry-after", "30") or 30)
                 if wait > 3600:
-                    raise GrokError("xAI rate limit wait is more than 1 hour")
+                    raise GrokError("xAI rate limit wait is more than 1 hour", 429)
                 self.sleep(wait)
                 continue
             if r.status_code >= 500 and attempt < 3:
                 self.sleep(2 ** (attempt + 1))
                 continue
             if r.status_code == 401 or r.status_code == 403:
-                raise GrokError(f"xAI rejected the API key (HTTP {r.status_code}). Run 'visualx auth grok-key'.")
+                raise GrokError(f"xAI rejected the API key (HTTP {r.status_code}). Run 'visualx auth grok-key'.",
+                                r.status_code)
             if r.status_code != 200:
-                raise GrokError(f"xAI HTTP {r.status_code}")
+                raise GrokError(f"xAI HTTP {r.status_code}", r.status_code)
             try:
                 return r.json()
             except ValueError as e:
-                raise GrokError("xAI response is not JSON") from e
+                raise GrokError("xAI response is not JSON", r.status_code) from e
         raise GrokError("xAI request did not succeed after retries")
 
 
@@ -377,20 +389,23 @@ def run_grok_collect(cfg: Config, store: Store, cache: Cache, log: RunLog, clien
     )
     if dry_run:
         return res
+    # FR-54, invariant 1: xAI does not sign in to X, so it cannot show who the
+    # owner is. The owner must come from an X sign-in (GET /2/users/me), not from
+    # the config handle alone (review 20261103, A-04).
+    ego_id = store.ego_id
+    if ego_id is None or not ego_id.isdigit():
+        res.stopped_reason = ("the Grok source needs the owner account from an X sign-in (FR-54): run "
+                              "'visualx auth status' once ($0.010) or an X API collect first")
+        return res
+    if (store.get_meta("ego_handle") or "").casefold() != handle.casefold():
+        res.stopped_reason = "the store belongs to a different owner handle (FR-54); use a new data folder"
+        return res
     if client is None:
         raise GrokError("no Grok client")
     if not approve(res.estimate_text):
         res.stopped_reason = "declined"
         return res
 
-    ego_id = store.ego_id
-    if ego_id is None:
-        ego_id = f"h:{handle.casefold()}"
-        store.set_meta("ego_user_id", ego_id)
-        store.set_meta("ego_handle", handle)
-    elif (store.get_meta("ego_handle") or "").casefold() not in ("", handle.casefold()):
-        res.stopped_reason = "the store belongs to a different owner handle (FR-54); use a new data folder"
-        return res
     known = {(p["handle"] or "").casefold(): uid for uid, p in store.profiles().items() if p.get("handle")}
     sid = store.begin_stage("collect", run_id, {}, cfg.hash())
     totals = dict.fromkeys(("not_json", "no_status_id", "not_cited", "bad_handle", "outside_window", "self", "not_owner",
@@ -414,11 +429,33 @@ def run_grok_collect(cfg: Config, store: Store, cache: Cache, log: RunLog, clien
                 rh = request_hash("xai /v1/responses", body)
                 resp = cache.get(rh)
                 cached = resp is not None
+                lid = None
                 if not cached:
-                    resp = client.respond(body)
-                    cache.put(rh, "xai /v1/responses", resp)
+                    # Reserve first, as the X API plan does (review 20261103, A-09): if the
+                    # request or the parsing fails, the ledger keeps the reservation.
+                    cur = store.conn.execute(
+                        "INSERT INTO cost_ledger(run_id,step,endpoint,billing_class,resources,unit_price,cost,reserved,response_code,at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (run_id, 1 if kind == "inbound" else 2, "xai x_search", "grok", 0, 0.0, reserve, reserve, None, now_iso()),
+                    )
+                    lid = int(cur.lastrowid or 0)
+                    try:
+                        resp = client.respond(body)
+                    except GrokError as e:
+                        if e.status is not None and e.status != 200:
+                            # An HTTP error response: xAI gave no result. A network error
+                            # or a response that is not JSON keeps the reservation.
+                            store.conn.execute("UPDATE cost_ledger SET cost=0, response_code=? WHERE id=?", (e.status, lid))
+                        raise
                 cost, posts, users = (0.0, 0, 0) if cached else usage_cost(resp, cfg)
                 items, drop = verify_items(resp, a, b, handle)
+                if not cached:
+                    if drop.get("not_json"):
+                        # A-24 (review 20261103): output that is cut short is not kept in the
+                        # cache, so the next run can ask again (a paid request).
+                        res.warnings.append(f"the model output for {a} to {b} ({kind}) was not complete JSON; "
+                                            "it is not cached, and the next run asks again")
+                    else:
+                        cache.put(rh, "xai /v1/responses", resp)
                 for k, v in drop.items():
                     totals[k] += v
                 ints, profs = [], {}
@@ -441,11 +478,9 @@ def run_grok_collect(cfg: Config, store: Store, cache: Cache, log: RunLog, clien
                                                  field_status=status_for(pv, PROFILE_OPTIONAL_FIELDS), handle=hh)
                 existing = set(store.profiles())
                 with store.tx() as c:
-                    if not cached:
-                        c.execute(
-                            "INSERT INTO cost_ledger(run_id,step,endpoint,billing_class,resources,unit_price,cost,reserved,response_code,at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                            (run_id, 1 if kind == "inbound" else 2, "xai x_search", "grok", posts + users, 0.0, cost, reserve, 200, obs),
-                        )
+                    if lid is not None:
+                        c.execute("UPDATE cost_ledger SET resources=?, cost=?, response_code=200 WHERE id=?",
+                                  (posts + users, cost, lid))
                     res.interactions_added += store.put_interactions(ints, conn=c)
                     store.put_profiles([p for uid, p in profs.items() if uid not in existing], conn=c)
                 res.requests += 0 if cached else 1

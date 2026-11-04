@@ -70,7 +70,10 @@ def layout(nodes: list[str], edges: list[dict[str, Any]], ego: str, ego_weight: 
     pos: dict[str, tuple[float, float]] = {ego: (0.0, 0.0)}
     if not alters:
         return pos
-    ug = g.as_undirected(combine_edges="sum") if g.ecount() else g.as_undirected()
+    # Both directions of a reciprocal pair hold the same pair_weight, so "sum" counted
+    # the pair two times. "max" gives the pair weight one time, as groups.py does
+    # (review 20261103, B-21).
+    ug = g.as_undirected(combine_edges="max") if g.ecount() else g.as_undirected()
     rng = random.Random(seed)
     # igraph draws from its own generator. A start-position matrix turns off the
     # grid speed-up (about 100 s at 10k nodes), so set the generator instead.

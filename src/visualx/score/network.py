@@ -37,6 +37,7 @@ from .patterns import (
     Finding,
     PatternData,
     _age_days,
+    _binom_tail,
     _excluded,
     _if,
     _iso,
@@ -50,8 +51,6 @@ from .skeleton import lookalike_grade, lookalike_match, names_alike
 ACT_TYPES: tuple[str, ...] = ("reply", "quote")
 TAG_TYPES: tuple[str, ...] = ("reply", "quote", "mention")
 
-# Detectors of this module that give a per-account rule (B13, B14, I04).
-RULE_DETECTORS: frozenset[str] = frozenset({"co_action", "mass_tagging", "profile_change"})
 
 
 def seed_accounts(d: PatternData) -> set[str]:
@@ -114,19 +113,26 @@ def detect_co_action(d: PatternData, c: dict[str, Any]) -> list[Finding]:
             acts[pid][u] = lat
     if not acts:
         return []
-    imps = sorted(int(d.ego_posts[p].get("impressions") or 0) for p in acts)
-    split = imps[len(imps) // 2]
-    band_lats: dict[int, list[float]] = {0: [], 1: []}
+    # A post with no impression count is not a low-reach post: it uses the pooled
+    # latencies (invariant 10, review 20261103, B-18). Band 2 is the pooled band.
+    def imp(pid: str) -> int | None:
+        v = d.ego_posts[pid].get("impressions")
+        return None if v is None else int(v)
+
+    imps = sorted(v for v in (imp(p) for p in acts) if v is not None)
+    split = imps[len(imps) // 2] if imps else 0
+    band_lats: dict[int, list[float]] = {0: [], 1: [], 2: []}
     band_of: dict[str, int] = {}
     for pid, us in acts.items():
-        b = 1 if int(d.ego_posts[pid].get("impressions") or 0) > split else 0
+        v = imp(pid)
+        b = 2 if v is None else (1 if v > split else 0)
         band_of[pid] = b
         band_lats[b].extend(us.values())
+    pooled = sorted(band_lats[0] + band_lats[1] + band_lats[2])
     if min(len(band_lats[0]), len(band_lats[1])) < 50:
-        pooled = sorted(band_lats[0] + band_lats[1])
-        cdf = {0: pooled, 1: pooled}
+        cdf = {0: pooled, 1: pooled, 2: pooled}
     else:
-        cdf = {0: sorted(band_lats[0]), 1: sorted(band_lats[1])}
+        cdf = {0: sorted(band_lats[0]), 1: sorted(band_lats[1]), 2: pooled}
     min_q = float(c["min_q"])
 
     def q_at(b: int, lat: float) -> float:
@@ -145,14 +151,15 @@ def detect_co_action(d: PatternData, c: dict[str, Any]) -> list[Finding]:
             continue
         b = band_of[pid]
         items = sorted(us.items())
+        qs = [q_at(b, la) for _, la in items]  # once for each actor (review 20261103, B-14)
         for x in range(len(items)):
             ua, la = items[x]
-            qa = q_at(b, la)
+            qa = qs[x]
             for y in range(x + 1, len(items)):
                 ub, lb = items[y]
                 key = (ua, ub)
                 shared[key] += 1
-                mu[key] += min(1.0, max(qa, q_at(b, lb)))
+                mu[key] += min(1.0, max(qa, qs[y]))
                 if abs(la - lb) <= w:
                     sync[key].append(pid)
     min_sync = int(c["min_sync"])
@@ -256,12 +263,14 @@ def detect_profile_change(d: PatternData, c: dict[str, Any], lk: dict[str, Any],
                     continue
                 nh = str(new.get("handle") or "").lstrip("@")
                 oh = str(old.get("handle") or "").lstrip("@")
-                if not nh:
+                if not nh or not oh:
+                    # An absent earlier handle is not "did not look alike": the
+                    # change cannot be shown (invariant 10, review 20261103, B-17).
                     continue
                 m_new = lookalike_match(nh, new.get("name"), str(k["handle"]), k.get("name"), lk)
                 if m_new is None:
                     continue
-                if oh and lookalike_match(oh, old.get("name"), str(k["handle"]), k.get("name"), lk) is not None:
+                if lookalike_match(oh, old.get("name"), str(k["handle"]), k.get("name"), lk) is not None:
                     continue
                 is_owner = k["user_id"] == d.ego_id
                 sev = lookalike_grade(m_new[0], new.get("name"), k.get("name"), 0.0, is_owner, lk, False)
@@ -392,20 +401,6 @@ def detect_mass_tagging(d: PatternData, c: dict[str, Any]) -> list[Finding]:
 # ---------------------------------------------------------------------------
 
 
-def _binom_tail(k: int, n: int, p: float) -> float:
-    if k <= 0:
-        return 1.0
-    if p <= 0:
-        return 0.0
-    if p >= 1:
-        return 1.0
-    total = 0.0
-    for j in range(k, n + 1):
-        total += math.exp(math.lgamma(n + 1) - math.lgamma(j + 1) - math.lgamma(n - j + 1)
-                          + j * math.log(p) + (n - j) * math.log1p(-p))
-    return min(1.0, total)
-
-
 def _rank_z(sample: list[float], ref: list[float]) -> float:
     """Mann-Whitney U as a z-value (normal approximation, ties counted half). Negative: the sample is lower."""
     n1, n2 = len(sample), len(ref)
@@ -516,8 +511,9 @@ def detect_community_anomaly(d: PatternData, c: dict[str, Any]) -> list[Finding]
             continue
         others_n = len(all_times) - n
         best: tuple[float, int, int, int] | None = None  # p, k, i, j
+        only_t = [t for t, _ in times]  # one list for all window starts (review 20261103, B-15)
         for i in range(n):
-            j = bisect.bisect_right([t for t, _ in times], times[i][0] + win)
+            j = bisect.bisect_right(only_t, times[i][0] + win)
             k = j - i
             if k < int(c["min_in_window"]):
                 continue

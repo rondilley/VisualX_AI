@@ -67,7 +67,8 @@ def router(body: dict) -> dict:
 
 
 class Server:
-    def __init__(self):
+    def __init__(self, status: int = 200, drop: bool = False, answer=None):
+        """``status``: the HTTP status of each answer. ``drop``: close the connection with no answer."""
         self.requests: list[dict] = []
         outer = self
 
@@ -79,8 +80,11 @@ class Server:
                 n = int(self.headers.get("content-length", 0))
                 body = json.loads(self.rfile.read(n))
                 outer.requests.append({"path": self.path, "auth": self.headers.get("authorization"), "body": body})
-                out = json.dumps(router(body)).encode()
-                self.send_response(200)
+                if drop:
+                    self.close_connection = True
+                    return
+                out = json.dumps((answer or router)(body)).encode()
+                self.send_response(status)
                 self.send_header("content-type", "application/json")
                 self.send_header("content-length", str(len(out)))
                 self.end_headers()
@@ -102,7 +106,7 @@ class Server:
         return f"http://127.0.0.1:{self.httpd.server_address[1]}"
 
 
-def _env(tmp_path, cap=5.0, reserve=1.0):
+def _env(tmp_path, cap=5.0, reserve=1.0, owner=True):
     extra = (f'[owner]\nhandle = "Ron_Dilley"\n[collect]\nwindow_days = 7\ncap_usd = {cap}\n'
              f'[grok]\nreserve_per_request_usd = {reserve}\n')
     cfg, store, cache, log = make_env(tmp_path)
@@ -111,6 +115,10 @@ def _env(tmp_path, cap=5.0, reserve=1.0):
         encoding="utf-8")
     from visualx.config import load
     cfg = load(tmp_path / "config", root=tmp_path)
+    if owner:
+        # The owner comes from an X sign-in (GET /2/users/me), not from config (FR-54).
+        store.set_meta("ego_user_id", "100")
+        store.set_meta("ego_handle", "Ron_Dilley")
     return cfg, store, cache, log
 
 
@@ -153,8 +161,8 @@ def test_collect_then_pipeline(tmp_path):
     assert res.requests == 4  # 8 days -> 2 windows x 2 queries
     assert res.accepted == 2 and res.dropped["not_cited"] == 1
     rows = {(r["type"], r["source_user_id"], r["target_user_id"]): r for r in store.interactions()}
-    assert set(rows) == {("mention", "h:bob", "h:ron_dilley"), ("reply", "h:ron_dilley", "h:alice")}
-    r = rows[("mention", "h:bob", "h:ron_dilley")]
+    assert set(rows) == {("mention", "h:bob", "100"), ("reply", "100", "h:alice")}
+    r = rows[("mention", "h:bob", "100")]
     assert r["source_endpoint"] == ENDPOINT and r["adapter"] == "grok_x_search"
     assert r["field_status"]["text"] == "unreadable" and r["text"] is None
     assert r["interaction_created_at"] == "2026-10-30T09:00:00.000Z"
@@ -209,3 +217,76 @@ def test_key_file_first_then_keyring(tmp_path):
 
     (tmp_path / "xai.key.txt").write_text("  key-from-file \n", encoding="utf-8")
     assert load_api_key(tmp_path) == "key-from-file"
+
+
+def test_grok_refuses_an_owner_that_x_did_not_sign_in(tmp_path):
+    # A-04 (review 20261103): with no X sign-in, config owner.handle alone must not
+    # choose the account to collect. No request goes to xAI.
+    cfg, store, cache, log = _env(tmp_path, owner=False)
+    with Server() as srv:
+        client = GrokClient(srv.url, key_provider=lambda: "k", log=log)
+        res = run_grok_collect(cfg, store, cache, log, client, lambda t: True, False, "g6", now=NOW)
+        client.close()
+        assert srv.requests == []
+    assert "X sign-in" in res.stopped_reason
+    assert store.ego_id is None
+    store.set_meta("ego_user_id", "h:ron_dilley")  # a provisional owner of an earlier version
+    res = run_grok_collect(cfg, store, cache, log, None, lambda t: True, False, "g7", now=NOW)
+    assert "X sign-in" in res.stopped_reason
+
+
+def test_grok_refuses_a_store_of_a_different_owner(tmp_path):
+    cfg, store, cache, log = _env(tmp_path)
+    store.set_meta("ego_handle", "someone_else")
+    res = run_grok_collect(cfg, store, cache, log, None, lambda t: True, False, "g8", now=NOW)
+    assert "different owner" in res.stopped_reason
+
+
+def _ledger(store, run_id):
+    return [dict(r) for r in store.q("SELECT cost, reserved, response_code FROM cost_ledger WHERE run_id=?", (run_id,))]
+
+
+def test_grok_ledger_keeps_the_reservation_when_the_answer_is_lost(tmp_path):
+    # A-09 (review 20261103): the ledger row comes before the request. The
+    # connection closes after xAI got the request, so xAI can bill it: no
+    # retry, and the reservation stays as the logged cost.
+    cfg, store, cache, log = _env(tmp_path, reserve=1.0)
+    with Server(drop=True) as srv:
+        client = GrokClient(srv.url, key_provider=lambda: "k", log=log)
+        client.sleep = lambda s: None
+        res = run_grok_collect(cfg, store, cache, log, client, lambda t: True, False, "g9", now=NOW)
+        client.close()
+        assert len(srv.requests) == 1
+    assert "network error" in res.stopped_reason
+    assert _ledger(store, "g9") == [{"cost": 1.0, "reserved": 1.0, "response_code": None}]
+    assert store.ledger_total("g9") == 1.0
+
+
+def test_grok_ledger_gives_no_cost_for_an_http_error(tmp_path):
+    cfg, store, cache, log = _env(tmp_path, reserve=1.0)
+    with Server(status=400) as srv:
+        client = GrokClient(srv.url, key_provider=lambda: "k", log=log)
+        res = run_grok_collect(cfg, store, cache, log, client, lambda t: True, False, "g10", now=NOW)
+        client.close()
+    assert "HTTP 400" in res.stopped_reason
+    assert _ledger(store, "g10") == [{"cost": 0.0, "reserved": 1.0, "response_code": 400}]
+
+
+def test_grok_output_cut_short_is_not_cached(tmp_path):
+    # A-24 (review 20261103): a cached response with JSON that is cut short lost the
+    # window for each later run.
+    cfg, store, cache, log = _env(tmp_path)
+
+    def cut(body):
+        r = router(body)
+        part = r["output"][0]["content"][0]
+        part["text"] = part["text"][:5]
+        return r
+
+    for run_id in ("g11", "g12"):
+        with Server(answer=cut) as srv:
+            client = GrokClient(srv.url, key_provider=lambda: "k", log=log)
+            res = run_grok_collect(cfg, store, cache, log, client, lambda t: True, False, run_id, now=NOW)
+            client.close()
+            assert len(srv.requests) == 4  # no cache hit on the second run
+        assert any("not complete JSON" in w for w in res.warnings)

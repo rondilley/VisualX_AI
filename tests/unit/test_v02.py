@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import xml.etree.ElementTree as ET
 
 import igraph as ig
@@ -21,7 +22,8 @@ from visualx.config import ConfigError
 from visualx.config import load as load_config
 from visualx.delete import decode_payloads, delete_ids, find_id
 from visualx.export import gexf_text, run_export, xnm_docs
-from visualx.render import run_render
+from visualx.render import build_payload, run_render
+from visualx.render.render import redact_payload
 from visualx.score.engine import RuleFileError, load_feed, load_rules
 from visualx.score.signals import SIGNALS, Account, Inputs, MissingInput
 
@@ -256,6 +258,46 @@ def test_redacted_render_holds_no_identity_or_signal(tmp_path):
     assert d["r"] == [] and d["f"] == [] and d["ov"] == {} and set(d["n"]["st"]) == {0}
     assert d["meta"]["redacted"] is True and d["meta"]["ego_handle"] is None
     assert len(d["e"]["s"]) > 0
+    # No absolute time and no run ID stays (review 20261103, C-02).
+    meta = d["meta"]
+    assert meta["t0"] is None and meta["render_id"] is None and meta["inputs"] == {}
+    assert meta["collect"] == {"sources": []} and "20" not in str(meta["generated_at"])
+    assert all(v is None or v % 1440 == 0 for k in ("ft", "lt") for v in d["e"][k])
+    assert d["cfg"]["topics"] == []
+    assert not re.search(r"20\d\d-\d\d-\d\dT", blob)
+    # The structure stays: the same multiset of weighted links between the same labels.
+    full = build_payload(cfg, store, "x", {}, None)[0]
+
+    def links(p):
+        lab = p["n"]["nm"] if p["meta"].get("redacted") else [
+            "Owner" if i == p["meta"]["ego_index"] else "?" for i in range(len(p["n"]["id"]))]
+        return sorted((p["e"]["w"][j], lab[p["e"]["s"][j]] == "Owner", lab[p["e"]["t"][j]] == "Owner")
+                      for j in range(len(p["e"]["s"])))
+
+    assert links(d) == links(full)
+    assert d["n"]["nm"][d["meta"]["ego_index"]] == "Owner"
+
+
+def test_redacted_node_order_does_not_follow_the_user_id_order(tmp_path):
+    # C-03: the node arrays came in user ID order, and the label shuffle used the
+    # node count as its seed, so a reader could map "Account n" back to the IDs.
+    cfg, store, cache, log = make_env(tmp_path)
+    small_graph(store)
+    full = build_payload(cfg, store, "x", {}, None)[0]
+    orders = set()
+    for _ in range(6):
+        d = redact_payload(full)
+        xs = tuple(d["n"]["x"])
+        orders.add(xs)
+        # Each node keeps its own layout position and degree after the permutation.
+        assert sorted(zip(d["n"]["x"], d["n"]["y"], strict=True)) == sorted(zip(full["n"]["x"], full["n"]["y"], strict=True))
+    assert len(orders) > 1  # a new secret order each time, not a fixed seed
+
+
+def test_redacted_render_is_deleted_with_the_user(tmp_path):
+    cfg, store, cache, log = make_env(tmp_path)
+    ids = small_graph(store)
+    path = run_render(cfg, store, log, redact=True)
     # The render is in the index, so a deletion of a user deletes the redacted file too (AD-10).
     rep = delete_ids(store, cache, cfg.config_dir, [ids["bob"]], "user")
     assert str(path.resolve()) in rep.renders_deleted and not path.exists()
@@ -315,3 +357,37 @@ def test_b06_fires_in_the_engine_and_is_a_hard_rule(tmp_path):
 
     s = score(tmp_path / "x", ruleset=rs, interactions=[kit_interaction(urls=["https://evil.example/a"])])
     assert "B06" in s.fired() and s.states[ACC] == "many_signals"
+
+
+@pytest.mark.parametrize("topics", [{"x": ["re:rel[i]gion"]}, {"x": ["re:pr.de"]}, {"x": ["racism"]},
+                                    {"x": ["vote"]}, {"pride": ["a"]}])
+def test_topic_check_uses_one_sensitive_list_and_tests_patterns(topics):
+    # B-22 (review 20261103): two lists that did not agree, and a pattern could
+    # hide a term from the word check.
+    with pytest.raises(G.TopicError):
+        G.check_topics(topics)
+
+
+def test_topic_check_accepts_the_shipped_topics():
+    from pathlib import Path
+
+    import yaml
+
+    shipped = Path(__file__).resolve().parents[2] / "config" / "topics.yaml"
+    assert G.check_topics(yaml.safe_load(shipped.read_text(encoding="utf-8"))["topics"])
+
+
+def test_user_delete_removes_an_unlisted_redacted_copy(tmp_path):
+    # C-21 (review 20261103): a redacted copy has no ID, so a content search cannot find it.
+    import shutil
+
+    cfg, store, cache, log = make_env(tmp_path)
+    ids = small_graph(store)
+    path = run_render(cfg, store, log, redact=True)
+    copy = path.with_name("map_copy_redacted.html")
+    shutil.copy(path, copy)
+    other = path.with_name("notes.html")
+    other.write_text("<p>not a map</p>", encoding="utf-8")
+    rep = delete_ids(store, cache, cfg.config_dir, [ids["bob"]], "user", extra_files=[copy, other])
+    assert not copy.exists() and str(copy) in rep.renders_deleted
+    assert other.exists()
