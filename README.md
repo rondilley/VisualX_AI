@@ -4,6 +4,18 @@ VisualX_AI is a local Python tool that builds a private, interactive map of your
 
 The output is one HTML file with a dark-theme WebGL graph. It opens offline and does not use a server.
 
+## Screenshots
+
+These images come from the live map of @Ron_Dilley (90 days and 20 seed accounts: 1,066 accounts and 1,206 links). The labels are off, so the images show no handle of a third party.
+
+The map with the node color set to the signal state. The owner account is at the center:
+
+![The map, with node color by signal state](docs/images/map_signal_states.png)
+
+The map with the node color set to the community, and the Controls drawer open:
+
+![The map, with node color by community and the Controls drawer open](docs/images/map_communities_controls.png)
+
 ## How it works
 
 ```mermaid
@@ -223,8 +235,17 @@ The HTML file contains signal states about third parties. Keep it private. Do no
 - [`VIBE_HISTORY.md`](VIBE_HISTORY.md): session log
 - [`tasks/todo.md`](tasks/todo.md): build slices
 
+## Acknowledgments
+
+This project is a derivative of the ideas of other persons. Ron Dilley made it to learn how their tools work.
+
+- **Daniel Card ([@UK_Daniel_Card](https://x.com/UK_Daniel_Card) on X).** The X network map of Daniel Card started this project. The look of the map page (the dark hex-grid canvas, the shaded nodes, the hover cards, the playback, and the dashboard) follows the images and videos that Daniel Card posted. That code is not public, and VisualX_AI copies none of it.
+- **Jacob Posel, [poseljacob/x-network-map](https://github.com/poseljacob/x-network-map)** (MIT, Copyright (c) 2026 Jacob Posel). The data contract, the tie-strength formula, the start weights, and the rule "never invent a node" come from this project.
+- **DocNow [twarc-network](https://github.com/DocNow/twarc-network)** for the interaction-type rules, **[twitter-explorer](https://github.com/pournaki/twitter-explorer)** for the redaction idea, and **OSoMe (Botometer, Hoaxy)** for the bot signal research.
+- **Sigma.js and graphology** (medialab, Sciences Po) for the page, and **igraph and leidenalg** for the metrics and the communities.
+
+[`ACKNOWLEDGMENTS.md`](ACKNOWLEDGMENTS.md) gives the full list, with the research papers and the software licenses.
+
 ## License
 
 GPL-3.0. See [`LICENSE`](LICENSE).
-
-Parts of the design (the data contract and the tie-strength formula) come from [poseljacob/x-network-map](https://github.com/poseljacob/x-network-map) (MIT, Copyright (c) 2026 Jacob Posel).
