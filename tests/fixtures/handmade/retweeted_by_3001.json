@@ -1,0 +1,7 @@
+{
+  "data": [
+    {"id": "2007", "username": "gina", "name": "Gina", "created_at": "2021-04-04T00:00:00.000Z", "protected": false, "verified_type": "none", "public_metrics": {"followers_count": 3, "following_count": 4000, "tweet_count": 20000, "listed_count": 0}},
+    {"id": "2001", "username": "alice", "name": "Alice", "created_at": "2015-01-01T00:00:00.000Z", "description": "Researcher", "protected": false, "verified_type": "none", "public_metrics": {"followers_count": 800, "following_count": 200, "tweet_count": 3000, "listed_count": 12}}
+  ],
+  "meta": {"result_count": 2}
+}

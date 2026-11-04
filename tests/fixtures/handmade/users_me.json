@@ -1,0 +1,15 @@
+{
+  "data": {
+    "id": "1000",
+    "username": "owner",
+    "name": "Owner Account",
+    "created_at": "2010-05-01T10:00:00.000Z",
+    "description": "Security practitioner",
+    "location": "Earth",
+    "protected": false,
+    "url": "",
+    "verified_type": "none",
+    "profile_image_url": "https://pbs.twimg.com/profile_images/1000/a_normal.jpg",
+    "public_metrics": {"followers_count": 5000, "following_count": 300, "tweet_count": 12000, "listed_count": 80, "like_count": 900}
+  }
+}

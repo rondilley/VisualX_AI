@@ -1,0 +1,76 @@
+# Bio topics (FR-28). Each topic name maps to keywords. A keyword matches the profile
+# description as a whole word, with no case difference. A keyword that starts with "re:"
+# is a regular expression.
+#
+# A topic is a display label on the map only. No rule and no detector reads it.
+# TR-06: the analyze stage refuses a topic or a keyword for politics, religion, health,
+# ethnicity, sexuality, or trade-union membership.
+#
+# Accounts with no keyword match can get a topic from their links (label propagation,
+# settings in config/visualx.toml [analyze.groups]). The page marks these as "from links".
+
+topics:
+  security:
+    - infosec
+    - cybersecurity
+    - cyber security
+    - security
+    - ciso
+    - pentest
+    - pentester
+    - penetration testing
+    - red team
+    - blue team
+    - malware
+    - threat intel
+    - threat intelligence
+    - dfir
+    - incident response
+    - appsec
+    - vulnerability
+    - exploit
+    - hacker
+    - hacking
+    - ctf
+    - soc analyst
+    - "re:\\bsec(ops|eng)\\b"
+  ai:
+    - ai
+    - artificial intelligence
+    - machine learning
+    - ml
+    - llm
+    - llms
+    - deep learning
+    - data science
+    - data scientist
+    - genai
+  software:
+    - developer
+    - software
+    - programmer
+    - engineer
+    - devops
+    - sre
+    - open source
+    - python
+    - rust
+    - golang
+    - javascript
+  cloud:
+    - cloud
+    - aws
+    - azure
+    - gcp
+    - kubernetes
+    - k8s
+  photography:
+    - photographer
+    - photography
+    - photos
+  crypto:
+    - crypto
+    - bitcoin
+    - blockchain
+    - web3
+    - ethereum

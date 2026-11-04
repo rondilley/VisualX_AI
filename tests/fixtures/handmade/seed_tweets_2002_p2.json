@@ -1,0 +1,14 @@
+{
+  "data": [
+    {
+      "id": "6000",
+      "author_id": "2002",
+      "created_at": "2026-10-06T09:00:00.000Z",
+      "conversation_id": "6000",
+      "text": "thanks @carol",
+      "entities": {"mentions": [{"start": 7, "end": 13, "username": "carol", "id": "2003"}]},
+      "public_metrics": {"retweet_count": 0, "reply_count": 0, "like_count": 0, "quote_count": 0, "bookmark_count": 0, "impression_count": 3}
+    }
+  ],
+  "meta": {"result_count": 1, "newest_id": "6000", "oldest_id": "6000"}
+}

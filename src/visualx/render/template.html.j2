@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="{{ csp }}">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VisualX map (private)</title>
+<style>
+:root {
+  --bg: #0a0806; --bg2: #120d08; --panel: rgba(22, 16, 10, 0.94); --panel-solid: #16100a;
+  --card: rgba(30, 22, 13, 0.92); --line: rgba(217, 164, 65, 0.18); --line2: rgba(217, 164, 65, 0.34);
+  --text: #ece3d0; --muted: #a39479; --faint: #6f644f; --gold: #d9a441; --gold2: #f0c56a;
+  --gold-bg: rgba(217, 164, 65, 0.12); --danger: #ff8a70; --input: rgba(8, 6, 4, 0.75);
+  --shadow: 0 8px 28px rgba(0, 0, 0, 0.55); --label: #f3ecdc;
+  --hex: rgba(217, 164, 65, 0.055); --glow: rgba(70, 48, 20, 0.55); --vignette: rgba(0, 0, 0, 0.72);
+  --sev-info: #7d8fa8; --sev-notable: #e0a63c; --sev-high: #ef6f4c;
+}
+body[data-theme="light"] {
+  --bg: #f4efe4; --bg2: #ebe3d2; --panel: rgba(252, 249, 242, 0.96); --panel-solid: #fcf9f2;
+  --card: rgba(255, 253, 248, 0.95); --line: rgba(120, 88, 30, 0.2); --line2: rgba(120, 88, 30, 0.4);
+  --text: #2a2216; --muted: #6d5f47; --faint: #9a8b70; --gold: #9a6b12; --gold2: #7a520a;
+  --gold-bg: rgba(154, 107, 18, 0.1); --danger: #b8401f; --input: #ffffff;
+  --shadow: 0 6px 20px rgba(60, 40, 10, 0.18); --label: #2a2216;
+  --hex: rgba(120, 88, 30, 0.07); --glow: rgba(255, 250, 235, 0.9); --vignette: rgba(160, 140, 100, 0.25);
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+.vx-isolate { unicode-bidi: isolate; }
+.vx-muted { color: var(--muted); }
+.vx-msg { color: var(--gold2); margin: 4px 0; min-height: 1em; }
+.vx-h { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--gold); margin: 0 0 8px; }
+.vx-btn { background: var(--gold-bg); border: 1px solid var(--line2); color: var(--text); border-radius: 6px;
+  padding: 5px 10px; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; }
+.vx-btn:hover { border-color: var(--gold); color: var(--gold2); }
+.vx-btn[aria-pressed="true"], .vx-btn.vx-on { background: var(--gold); color: #1a1208; border-color: var(--gold); }
+.vx-btn:disabled { opacity: 0.45; cursor: default; }
+.vx-btn-primary { background: var(--gold); color: #1a1208; border-color: var(--gold); }
+.vx-btn-primary:hover { background: var(--gold2); color: #1a1208; }
+.vx-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; flex: none; }
+.vx-dash { display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: 2px; flex: none; }
+.vx-mark { font-family: Consolas, "Courier New", monospace; font-weight: 700; display: inline-block; min-width: 1.6em; color: var(--muted); }
+
+/* ---- top bar ---- */
+#vx-app { display: grid; grid-template-rows: 52px 1fr; height: 100vh; }
+#vx-top { display: flex; align-items: center; gap: 10px; padding: 0 12px; background: var(--panel-solid);
+  border-bottom: 1px solid var(--line); position: relative; z-index: 30; min-width: 0; }
+.vx-brand { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 16px; letter-spacing: 0.04em; white-space: nowrap; }
+.vx-logo { width: 26px; height: 26px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 11px;
+  color: #1a1208; background: radial-gradient(circle at 35% 30%, #ffe3a3, #d9a441 45%, #6b4a12 100%); }
+.vx-pill { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--gold);
+  border: 1px solid var(--line2); border-radius: 10px; padding: 1px 7px; }
+.vx-searchbox { position: relative; flex: 0 1 260px; min-width: 150px; }
+#vx-search { width: 100%; background: var(--input); border: 1px solid var(--line2); border-radius: 6px; padding: 6px 10px 6px 28px; outline: none; }
+#vx-search:focus { border-color: var(--gold); }
+.vx-search-icon { position: absolute; left: 10px; top: 50%; width: 10px; height: 10px; margin-top: -6px; border: 2px solid var(--muted);
+  border-radius: 50%; pointer-events: none; }
+.vx-search-icon::after { content: ""; position: absolute; width: 2px; height: 5px; background: var(--muted); right: -3px; bottom: -5px; transform: rotate(-45deg); }
+.vx-search-hint { position: absolute; left: 29px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; white-space: nowrap; }
+.vx-searchbox.vx-has-text .vx-search-hint { display: none; }
+#vx-results { position: absolute; top: 36px; left: 0; width: 360px; max-width: 80vw; max-height: 360px; overflow: auto; margin: 0; padding: 4px;
+  list-style: none; background: var(--panel-solid); border: 1px solid var(--line2); border-radius: 8px; box-shadow: var(--shadow); display: none; }
+#vx-results.vx-open { display: block; }
+#vx-results li button { width: 100%; text-align: left; background: none; border: 0; border-radius: 5px; padding: 6px 8px;
+  display: flex; gap: 6px; align-items: baseline; overflow: hidden; white-space: nowrap; }
+#vx-results li button:hover, #vx-results li button.vx-active { background: var(--gold-bg); }
+#vx-results .vx-r-h { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+#vx-results .vx-r-n { color: var(--muted); overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+#vx-results .vx-r-x { color: var(--faint); font-size: 11px; margin-left: auto; }
+.vx-group { display: flex; gap: 4px; align-items: center; flex: none; }
+.vx-group-label { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); margin-right: 2px; }
+.vx-chip { display: inline-flex; align-items: center; gap: 0; padding: 4px 8px; border: 1px solid var(--line2); border-radius: 6px;
+  font-size: 12px; font-weight: 600; background: transparent; cursor: pointer; user-select: none; white-space: nowrap; }
+.vx-chip:hover { border-color: var(--gold); }
+.vx-chip input { appearance: none; -webkit-appearance: none; margin: 0 6px 0 0; width: 14px; height: 3px; border-radius: 2px;
+  background: var(--chip, #888); cursor: pointer; }
+.vx-chip input:not(:checked) { opacity: 0.25; }
+.vx-chip.vx-off { color: var(--faint); border-style: dashed; }
+.vx-seg { display: inline-flex; border: 1px solid var(--line2); border-radius: 6px; overflow: hidden; }
+.vx-seg button { background: none; border: 0; padding: 4px 9px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.vx-seg button + button { border-left: 1px solid var(--line); }
+.vx-seg button[aria-pressed="true"] { background: var(--gold); color: #1a1208; }
+.vx-spacer { flex: 1 1 auto; }
+.vx-icon-btn { width: 30px; padding: 5px 0; text-align: center; }
+
+/* ---- main ---- */
+#vx-body { position: relative; min-height: 0; }
+#vx-mapview, #vx-overview { position: absolute; inset: 0; }
+#vx-stage { position: absolute; inset: 0; overflow: hidden; background: var(--bg); }
+#vx-bg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; display: block; }
+#vx-graph { position: absolute; inset: 0; z-index: 1; }
+.vx-float { position: absolute; z-index: 5; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
+#vx-hud { position: absolute; z-index: 5; top: 12px; left: 12px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; transition: left 0.2s; }
+#vx-counts { padding: 5px 10px; font-size: 12px; font-weight: 600; color: var(--muted); position: static; }
+#vx-counts strong { color: var(--text); }
+#vx-clock { position: static; padding: 6px 12px 8px; }
+#vx-clock-time { font-size: 26px; font-weight: 800; letter-spacing: 0.02em; font-variant-numeric: tabular-nums; }
+#vx-clock-date { font-size: 11px; color: var(--muted); }
+#vx-focus { position: static; padding: 6px 10px; display: flex; gap: 8px; align-items: center; max-width: 380px; }
+#vx-focus span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#vx-legend { left: 12px; bottom: 12px; padding: 8px 12px; display: grid; grid-template-columns: auto auto; gap: 3px 18px; font-size: 12px; transition: left 0.2s; }
+#vx-legend .vx-lg { display: flex; align-items: center; white-space: nowrap; color: var(--muted); }
+#vx-legend .vx-lg-c { color: var(--faint); margin-left: 6px; font-variant-numeric: tabular-nums; }
+#vx-zoom { right: 12px; bottom: 12px; display: flex; flex-direction: column; gap: 6px; background: none; border: 0; box-shadow: none; transition: right 0.2s; }
+#vx-zoom button { width: 34px; height: 34px; border-radius: 7px; background: var(--panel); border: 1px solid var(--line2); color: var(--gold2); font-size: 17px; font-weight: 700; padding: 0; }
+#vx-zoom button:hover { border-color: var(--gold); }
+#vx-private { position: absolute; z-index: 4; bottom: 12px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--faint);
+  padding: 3px 10px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); white-space: nowrap; }
+#vx-hover { position: absolute; z-index: 8; pointer-events: none; padding: 7px 10px; font-size: 12px; line-height: 1.5; max-width: 320px;
+  background: var(--panel-solid); border: 1px solid var(--gold); border-radius: 6px; box-shadow: var(--shadow); }
+#vx-hover .vx-hv-h { font-weight: 700; }
+#vx-hover div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#vx-layout-status { position: absolute; z-index: 5; right: 60px; bottom: 14px; font-size: 11px; color: var(--muted); transition: right 0.2s; }
+#vx-mapview.vx-left-open #vx-hud, #vx-mapview.vx-left-open #vx-legend { left: 352px; }
+#vx-mapview.vx-right-open #vx-zoom { right: 392px; }
+#vx-mapview.vx-right-open #vx-layout-status { right: 440px; }
+
+/* ---- playback ---- */
+#vx-playbar { position: absolute; z-index: 6; top: 12px; left: 50%; transform: translateX(-50%); width: min(760px, calc(100% - 24px));
+  padding: 8px 12px; display: grid; grid-template-columns: auto auto 1fr auto; gap: 6px 10px; align-items: center; }
+#vx-playbar .vx-h { margin: 0; grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; }
+#vx-pb-range { width: 100%; accent-color: var(--gold); }
+#vx-pb-now { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+#vx-pb-live { font-size: 12px; color: var(--muted); grid-column: 1 / -1; display: flex; gap: 12px; flex-wrap: wrap; }
+#vx-pb-live strong { color: var(--text); }
+#vx-pb-speed { background: var(--input); border: 1px solid var(--line2); border-radius: 6px; padding: 3px 6px; font-size: 12px; }
+
+/* ---- drawers ---- */
+.vx-drawer { position: absolute; z-index: 10; top: 12px; bottom: 12px; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
+.vx-drawer[hidden] { display: none; }
+#vx-left { left: 12px; width: 328px; }
+#vx-right { right: 12px; width: 368px; }
+.vx-drawer-head { display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.vx-drawer-head .vx-h { margin: 0; flex: 1; }
+.vx-drawer-body { overflow: auto; padding: 12px; min-height: 0; flex: 1; }
+.vx-close { background: none; border: 0; color: var(--muted); font-size: 18px; line-height: 1; padding: 2px 6px; border-radius: 4px; }
+.vx-close:hover { color: var(--gold2); background: var(--gold-bg); }
+.vx-tabs { display: flex; gap: 4px; flex: 1; }
+.vx-tabs button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 4px 8px; font-size: 11px; font-weight: 700;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.vx-tabs button[aria-selected="true"] { color: var(--gold); border-bottom-color: var(--gold); }
+
+/* findings */
+.vx-finding { border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; margin-bottom: 8px; background: var(--card); cursor: pointer; }
+.vx-finding:hover { border-color: var(--line2); }
+.vx-finding.vx-active { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold) inset; }
+.vx-finding-top { display: flex; gap: 8px; align-items: baseline; }
+.vx-finding-title { font-weight: 700; overflow-wrap: anywhere; }
+.vx-finding-sum { color: var(--muted); margin: 4px 0 6px; overflow-wrap: anywhere; font-size: 12px; }
+.vx-new { font-size: 10px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; border-radius: 4px; padding: 1px 6px; flex: none; color: #140e07; background: #56B4E9; }
+.vx-sev { font-size: 10px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; border-radius: 4px; padding: 1px 6px; flex: none; color: #140e07; }
+.vx-sev-info { background: var(--sev-info); }
+.vx-sev-notable { background: var(--sev-notable); }
+.vx-sev-high { background: var(--sev-high); }
+.vx-members { display: flex; flex-wrap: wrap; gap: 4px; }
+.vx-member { background: var(--gold-bg); border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; font-size: 11px;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vx-member:hover { border-color: var(--gold); }
+.vx-evidence { margin-top: 6px; font-size: 11px; color: var(--muted); }
+.vx-evidence summary { cursor: pointer; color: var(--faint); }
+.vx-evidence dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 8px; margin: 4px 0 0; }
+.vx-evidence dt { color: var(--faint); }
+.vx-evidence dd { margin: 0; overflow-wrap: anywhere; }
+.vx-section + .vx-section { margin-top: 16px; }
+.vx-empty { color: var(--faint); font-size: 12px; padding: 6px 0; }
+.vx-list { list-style: none; margin: 0; padding: 0; }
+.vx-list li button { width: 100%; display: flex; gap: 6px; align-items: center; text-align: left; background: none; border: 0;
+  border-radius: 6px; padding: 5px 6px; white-space: nowrap; overflow: hidden; }
+.vx-list li button:hover { background: var(--gold-bg); }
+.vx-list .vx-l-h { overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.vx-list .vx-l-x { margin-left: auto; color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+/* account panel */
+#vx-panel h2 { font-size: 17px; margin: 0; overflow-wrap: anywhere; }
+#vx-p-handle { color: var(--muted); overflow-wrap: anywhere; }
+.vx-statepill { display: inline-flex; align-items: center; gap: 2px; margin: 8px 0 4px; padding: 3px 10px 3px 8px; border-radius: 12px;
+  border: 1px solid var(--line2); font-weight: 600; font-size: 12px; background: var(--card); }
+.vx-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 10px 0; }
+.vx-stat { background: var(--card); border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; min-width: 0; }
+.vx-stat-v { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vx-stat-k { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+.vx-bio { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; border-left: 2px solid var(--gold);
+  padding: 2px 0 2px 10px; margin: 8px 0; unicode-bidi: isolate; color: var(--text); }
+.vx-bio:empty { display: none; }
+.vx-sub { margin: 14px 0 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--gold); }
+#vx-panel dl { margin: 4px 0; display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; font-size: 12px; }
+#vx-panel dt { color: var(--muted); }
+#vx-panel dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+#vx-panel a { color: var(--gold2); overflow-wrap: anywhere; }
+.vx-rules { margin: 4px 0; padding: 0; list-style: none; }
+.vx-rules li { margin: 0 0 6px; padding: 6px 8px; border-radius: 6px; background: var(--card); border: 1px solid var(--line); overflow-wrap: anywhere; font-size: 12px; }
+.vx-rules .vx-rule-id { font-weight: 700; color: var(--gold2); }
+.vx-rules .vx-rule-meta { color: var(--faint); font-size: 11px; }
+.vx-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+.vx-note { font-size: 12px; color: var(--muted); margin: 4px 0; }
+.vx-warn { color: var(--gold2); }
+
+/* controls */
+.vx-ctl-section { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px 6px; margin-bottom: 12px; background: var(--card); }
+.vx-ctl { margin-bottom: 10px; }
+.vx-ctl label, .vx-ctl .vx-ctl-name { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 12px; }
+.vx-ctl label .vx-val { margin-left: auto; color: var(--gold2); font-variant-numeric: tabular-nums; font-weight: 600; }
+.vx-help { font-size: 11px; color: var(--faint); margin-top: 2px; }
+.vx-ctl input[type=range] { width: 100%; accent-color: var(--gold); margin: 4px 0 0; }
+.vx-ctl select, .vx-ctl input[type=number] { width: 100%; margin-top: 4px; background: var(--input); border: 1px solid var(--line2); border-radius: 6px; padding: 4px 6px; }
+.vx-ctl input[type=checkbox] { accent-color: var(--gold); margin: 0; }
+.vx-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+#vx-f-states label { font-weight: 500; margin: 3px 0; }
+#vx-path-out { margin: 6px 0 0; padding-left: 20px; font-size: 12px; }
+#vx-path-a, #vx-path-b { overflow-wrap: anywhere; }
+
+/* ---- overview ---- */
+#vx-overview { overflow: auto; padding: 16px 18px 28px; background: var(--bg); }
+#vx-overview[hidden], #vx-mapview[hidden] { display: none; }
+.vx-ov-head { display: flex; gap: 16px; align-items: flex-start; margin-bottom: 14px; flex-wrap: wrap; }
+.vx-ov-head h2 { margin: 0; font-size: 20px; }
+#vx-facts { color: var(--muted); font-size: 12px; margin-top: 4px; }
+#vx-limits { color: var(--faint); font-size: 12px; margin: 4px 0 0; max-width: 980px; }
+.vx-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.vx-card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+.vx-card-wide { grid-column: 1 / -1; }
+.vx-kv { display: flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 13px; min-width: 0; }
+.vx-kv .vx-k { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; }
+.vx-kv .vx-v { font-weight: 700; font-variant-numeric: tabular-nums; }
+.vx-kv button.vx-k { background: none; border: 0; padding: 0; text-align: left; }
+.vx-kv button.vx-k:hover { color: var(--gold2); }
+.vx-stack { display: flex; height: 10px; border-radius: 5px; overflow: hidden; margin: 2px 0 10px; background: var(--line); }
+.vx-stack span { display: block; height: 100%; }
+.vx-bar { height: 4px; border-radius: 2px; background: var(--line); margin: 1px 0 5px; overflow: hidden; }
+.vx-bar span { display: block; height: 100%; border-radius: 3px; background: var(--gold); }
+.vx-hist { display: flex; align-items: flex-end; gap: 2px; height: 90px; margin-top: 6px; }
+.vx-hist span { flex: 1; background: var(--gold); opacity: 0.8; border-radius: 2px 2px 0 0; min-height: 1px; }
+.vx-hist-axis { display: flex; justify-content: space-between; color: var(--faint); font-size: 11px; margin-top: 4px; }
+.vx-table-tools { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+#vx-ov-search { background: var(--input); border: 1px solid var(--line2); border-radius: 6px; padding: 5px 10px; width: 280px; max-width: 100%; }
+.vx-table-wrap { overflow: auto; max-height: 560px; border: 1px solid var(--line); border-radius: 8px; }
+#vx-ov-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+#vx-ov-table th { position: sticky; top: 0; background: var(--panel-solid); text-align: left; padding: 0; border-bottom: 1px solid var(--line2); z-index: 1; }
+#vx-ov-table th button { width: 100%; text-align: left; background: none; border: 0; padding: 7px 10px; font-size: 11px; font-weight: 700;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--gold); white-space: nowrap; }
+#vx-ov-table th.vx-num button, #vx-ov-table td.vx-num { text-align: right; }
+#vx-ov-table td { padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; max-width: 280px; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+#vx-ov-table tbody tr { cursor: pointer; }
+#vx-ov-table tbody tr:hover { background: var(--gold-bg); }
+
+/* ---- help ---- */
+#vx-help { position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, 0.55); display: grid; place-items: center; }
+#vx-help[hidden] { display: none; }
+.vx-help-box { width: min(720px, calc(100% - 32px)); max-height: calc(100% - 64px); overflow: auto; background: var(--panel-solid);
+  border: 1px solid var(--line2); border-radius: 12px; box-shadow: var(--shadow); padding: 18px 22px; }
+.vx-help-box h2 { margin: 0; font-size: 18px; flex: 1; }
+.vx-help-box h3 { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--gold); margin: 16px 0 4px; }
+.vx-help-box p, .vx-help-box li { color: var(--text); margin: 4px 0; }
+.vx-help-box ul { padding-left: 18px; margin: 4px 0; }
+.vx-kbd { font-family: Consolas, monospace; border: 1px solid var(--line2); border-radius: 4px; padding: 0 5px; font-size: 11px; }
+#vx-error { display: none; position: fixed; z-index: 60; top: 60px; left: 50%; transform: translateX(-50%); color: #ffd7cc;
+  background: #5a1c10; border: 1px solid var(--danger); border-radius: 8px; padding: 8px 14px; }
+@media (max-width: 1100px) { .vx-group-label { display: none; } #vx-windows { display: none; } }
+</style>
+</head>
+<body data-theme="dark">
+<div id="vx-app">
+  <header id="vx-top">
+    <div class="vx-brand"><span class="vx-logo" aria-hidden="true">VX</span><span>VisualX</span><span class="vx-pill" title="This file describes third parties. Do not share it.">Private</span></div>
+    <div class="vx-searchbox">
+      <span class="vx-search-icon" aria-hidden="true"></span>
+      <span class="vx-search-hint" aria-hidden="true">Search accounts <span class="vx-kbd">/</span></span>
+      <input id="vx-search" type="text" autocomplete="off" spellcheck="false" aria-label="Search accounts by handle or display name" title="Search by handle or display name. Press / to start.">
+      <ul id="vx-results" role="listbox" aria-label="Search results"></ul>
+    </div>
+    <div class="vx-group" id="vx-windows" role="group" aria-label="Time window">
+      <span class="vx-group-label">Time</span>
+      <div class="vx-seg">
+        <button type="button" data-window="all" aria-pressed="true" title="All links in the data">All</button>
+        <button type="button" data-window="43200" aria-pressed="false" title="Links with an interaction in the last 30 days of the data">30 d</button>
+        <button type="button" data-window="10080" aria-pressed="false" title="Links with an interaction in the last 7 days of the data">7 d</button>
+        <button type="button" data-window="2880" aria-pressed="false" title="Links with an interaction in the last 48 hours of the data">48 h</button>
+      </div>
+    </div>
+    <div class="vx-group" id="vx-f-types" role="group" aria-label="Interaction types"><span class="vx-group-label">Links</span></div>
+    <div class="vx-spacer"></div>
+    <div class="vx-seg" role="group" aria-label="View">
+      <button type="button" id="vx-view-map" aria-pressed="true">Map</button>
+      <button type="button" id="vx-view-overview" aria-pressed="false">Overview</button>
+    </div>
+    <button type="button" class="vx-btn" id="vx-btn-findings" aria-pressed="false" title="Findings and flagged accounts">Findings</button>
+    <button type="button" class="vx-btn" id="vx-btn-playback" aria-pressed="false" title="Replay the links in time order">Playback</button>
+    <button type="button" class="vx-btn" id="vx-btn-controls" aria-pressed="false" title="Display, layout, filters, and path finder">Controls</button>
+    <button type="button" class="vx-btn vx-icon-btn" id="vx-btn-theme" title="Light or dark theme" aria-label="Light or dark theme">&#9681;</button>
+    <button type="button" class="vx-btn vx-icon-btn" id="vx-btn-help" title="How to use this page" aria-label="Help">?</button>
+  </header>
+  <div id="vx-body">
+    <section id="vx-mapview">
+      <div id="vx-stage">
+        <canvas id="vx-bg" aria-hidden="true"></canvas>
+        <main id="vx-graph" aria-label="Interaction graph"></main>
+        <div id="vx-hud">
+          <div id="vx-counts" class="vx-float" aria-live="polite"></div>
+          <div id="vx-clock" class="vx-float" hidden><div id="vx-clock-time"></div><div id="vx-clock-date"></div></div>
+          <div id="vx-focus" class="vx-float" hidden><span id="vx-focus-text"></span><button type="button" class="vx-btn" id="vx-focus-clear">Clear</button></div>
+        </div>
+        <div id="vx-playbar" class="vx-float" hidden>
+          <div class="vx-h"><span>&#9654; Graph playback</span><span class="vx-muted" style="font-weight:500;letter-spacing:0;text-transform:none">Links appear at the time of their first interaction.</span></div>
+          <button type="button" class="vx-btn" id="vx-pb-rewind" title="Back to the start" aria-label="Back to the start">&#9198;</button>
+          <button type="button" class="vx-btn vx-btn-primary" id="vx-pb-play">Play</button>
+          <input id="vx-pb-range" type="range" min="0" max="1" step="1" value="1" aria-label="Playback time">
+          <select id="vx-pb-speed" aria-label="Playback speed" title="Time to play the whole period">
+            <option value="30">Whole period in 30 s</option>
+            <option value="60" selected>Whole period in 1 min</option>
+            <option value="180">Whole period in 3 min</option>
+          </select>
+          <div id="vx-pb-live"><span id="vx-pb-now"></span><span id="vx-pb-counts"></span><span id="vx-pb-untimed"></span></div>
+        </div>
+        <div id="vx-legend" class="vx-float" aria-label="Legend"></div>
+        <div id="vx-zoom" class="vx-float">
+          <button type="button" id="vx-zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
+          <button type="button" id="vx-zoom-out" title="Zoom out" aria-label="Zoom out">&minus;</button>
+          <button type="button" id="vx-zoom-fit" title="Show the whole graph" aria-label="Show the whole graph">&#10530;</button>
+        </div>
+        <div id="vx-layout-status" aria-live="polite"></div>
+        <div id="vx-private">Private file - do not share. It describes third parties.</div>
+        <div id="vx-hover" hidden></div>
+      </div>
+
+      <aside id="vx-left" class="vx-drawer" hidden aria-label="Findings">
+        <div class="vx-drawer-head"><h2 class="vx-h">Findings</h2><button type="button" class="vx-close" id="vx-left-close" aria-label="Close findings">&times;</button></div>
+        <div class="vx-drawer-body">
+          <div class="vx-section">
+            <p class="vx-help" style="margin:0 0 8px">Patterns that the score stage found across two or more accounts. Click a finding to show its accounts on the map.</p>
+            <div id="vx-findings"></div>
+          </div>
+          <div class="vx-section">
+            <h3 class="vx-h">Flagged accounts</h3>
+            <p class="vx-help" style="margin:0 0 6px">Accounts with some or many signals. A state describes signals in the data, not a person.</p>
+            <ul id="vx-flagged" class="vx-list"></ul>
+          </div>
+        </div>
+      </aside>
+
+      <aside id="vx-right" class="vx-drawer" hidden aria-label="Account and controls">
+        <div class="vx-drawer-head">
+          <div class="vx-tabs" role="tablist">
+            <button type="button" role="tab" id="vx-tab-account" aria-selected="true">Account</button>
+            <button type="button" role="tab" id="vx-tab-controls" aria-selected="false">Controls</button>
+          </div>
+          <button type="button" class="vx-close" id="vx-right-close" aria-label="Close panel">&times;</button>
+        </div>
+        <div class="vx-drawer-body">
+          <div id="vx-panel" aria-live="polite">
+            <p class="vx-muted">Click a node, a search result, or a row in the Overview to see the account.</p>
+          </div>
+          <div id="vx-controls" hidden>
+            <div class="vx-ctl-section">
+              <h3 class="vx-h">Display</h3>
+              <div class="vx-ctl"><label for="vx-size">Node size</label>
+                <select id="vx-size">
+                  <option value="weighted_degree">Weighted degree (tie strength)</option>
+                  <option value="followers">Followers</option>
+                  <option value="activity">Activity seen (posts and reposts)</option>
+                </select>
+                <div class="vx-help">What makes a node larger.</div></div>
+              <div class="vx-ctl"><label for="vx-node-scale">Node scale <span class="vx-val" id="vx-node-scale-v"></span></label>
+                <input id="vx-node-scale" type="range" min="0.3" max="3" step="0.1" value="1">
+                <div class="vx-help">Makes all nodes larger or smaller.</div></div>
+              <div class="vx-ctl"><label for="vx-color">Node color</label>
+                <select id="vx-color">
+                  <option value="state">Signal state</option>
+                  <option value="type">Main interaction type</option>
+                  <option value="community">Community (Leiden, exploratory)</option>
+                  <option value="topic">Bio topic</option>
+                </select>
+                <div class="vx-help">Community groups accounts that link to each other more than to the rest.</div></div>
+              <div class="vx-ctl"><label><input id="vx-labels" type="checkbox" checked> Show labels</label>
+                <div class="vx-help">Handles next to the nodes. Hover and selection always show a label.</div></div>
+              <div class="vx-ctl"><label for="vx-label-density">Label density <span class="vx-val" id="vx-label-density-v"></span></label>
+                <input id="vx-label-density" type="range" min="0.1" max="4" step="0.1" value="1">
+                <div class="vx-help">More labels at the same zoom. High values can overlap.</div></div>
+              <div class="vx-ctl"><label for="vx-edge-opacity">Link opacity <span class="vx-val" id="vx-edge-opacity-v"></span></label>
+                <input id="vx-edge-opacity" type="range" min="0.03" max="1" step="0.01" value="0.35">
+                <div class="vx-help">Low values keep the map calm. Hover makes the links of one account bright.</div></div>
+              <div class="vx-ctl"><label for="vx-edge-width">Link thickness <span class="vx-val" id="vx-edge-width-v"></span></label>
+                <input id="vx-edge-width" type="range" min="0.2" max="4" step="0.1" value="1">
+                <div class="vx-help">Thicker links show tie weight better.</div></div>
+              <div class="vx-ctl"><label><input id="vx-arrows" type="checkbox"> Arrow heads</label>
+                <div class="vx-help">Show the direction: from the account that acted to the account it replied to, quoted, mentioned, or reposted.</div></div>
+            </div>
+
+            <div class="vx-ctl-section">
+              <h3 class="vx-h">Layout</h3>
+              <div class="vx-ctl"><label for="vx-layout">Arrangement</label>
+                <select id="vx-layout">
+                  <option value="ego">Owner at the center (calculated by VisualX)</option>
+                  <option value="force">Force (live ForceAtlas2)</option>
+                  <option value="state">Grouped by signal state</option>
+                </select>
+                <div class="vx-help">Force moves connected accounts together. You can drag any node.</div></div>
+              <div class="vx-row vx-ctl">
+                <button type="button" class="vx-btn vx-btn-primary" id="vx-fa2-run">Start force</button>
+                <button type="button" class="vx-btn" id="vx-layout-reset" title="Go back to the layout from the analyze stage">Reset layout</button>
+              </div>
+              <div class="vx-ctl"><label for="vx-fa2-gravity">Gravity <span class="vx-val" id="vx-fa2-gravity-v"></span></label>
+                <input id="vx-fa2-gravity" type="range" min="0.05" max="5" step="0.05" value="1">
+                <div class="vx-help">Pulls all nodes to the center. Higher keeps small groups close.</div></div>
+              <div class="vx-ctl"><label for="vx-fa2-scaling">Spread <span class="vx-val" id="vx-fa2-scaling-v"></span></label>
+                <input id="vx-fa2-scaling" type="range" min="0.5" max="50" step="0.5" value="5">
+                <div class="vx-help">Pushes nodes apart. Higher gives a larger, more open map.</div></div>
+              <div class="vx-ctl"><label for="vx-fa2-ewi">Tie weight pull <span class="vx-val" id="vx-fa2-ewi-v"></span></label>
+                <input id="vx-fa2-ewi" type="range" min="0" max="2" step="0.1" value="1">
+                <div class="vx-help">How much strong ties pull accounts together. 0 treats all links the same.</div></div>
+              <div class="vx-ctl"><label><input id="vx-fa2-linlog" type="checkbox"> LinLog mode</label>
+                <div class="vx-help">Makes clusters tighter and easier to see.</div></div>
+              <div class="vx-ctl"><label><input id="vx-fa2-overlap" type="checkbox"> Prevent overlap</label>
+                <div class="vx-help">Keeps nodes from sitting on top of each other. It is slower.</div></div>
+            </div>
+
+            <div class="vx-ctl-section">
+              <h3 class="vx-h">Filters</h3>
+              <div class="vx-ctl"><span class="vx-ctl-name">Signal state</span>
+                <div id="vx-f-states"></div>
+                <div class="vx-help">Clear a box to hide accounts in that state.</div></div>
+              <div class="vx-ctl"><label for="vx-minw">Minimum tie weight</label>
+                <input id="vx-minw" type="number" min="0" step="0.5">
+                <div class="vx-help">Hide links weaker than this value.</div></div>
+              <div class="vx-ctl"><label><input id="vx-core" type="checkbox"> Core view only</label>
+                <div id="vx-core-note" class="vx-help"></div></div>
+              <div class="vx-ctl"><label><input id="vx-show-missing" type="checkbox"> Show accounts with no profile</label>
+                <div class="vx-help">These accounts have links but X gave no profile for them.</div></div>
+              <div class="vx-ctl"><label for="vx-f-community">Community</label>
+                <select id="vx-f-community"></select>
+                <div id="vx-comm-note" class="vx-help"></div></div>
+              <div class="vx-ctl"><label for="vx-f-topic">Bio topic</label>
+                <select id="vx-f-topic"></select>
+                <div class="vx-help">From keywords in the bio (config/topics.yaml), or from the links when the bio has no keyword.</div></div>
+              <div class="vx-ctl"><label for="vx-f-change">Changes since the last snapshot</label>
+                <select id="vx-f-change"></select>
+                <div id="vx-f-change-note" class="vx-help"></div></div>
+              <div class="vx-ctl"><label><input id="vx-f-hubs" type="checkbox"> Hubs and bridges only</label>
+                <div id="vx-f-hubs-note" class="vx-help"></div></div>
+            </div>
+
+            <div class="vx-ctl-section">
+              <h3 class="vx-h">Path finder</h3>
+              <div class="vx-help" style="margin-bottom:6px">Find the strongest chain of ties between two accounts. Select an account, then use "Path from here" and "Path to here" in its panel.</div>
+              <div class="vx-note">From: <span id="vx-path-a" class="vx-isolate vx-muted">(none)</span></div>
+              <div class="vx-note">To: <span id="vx-path-b" class="vx-isolate vx-muted">(none)</span></div>
+              <div class="vx-row vx-ctl" style="margin-top:6px">
+                <button id="vx-path-go" type="button" class="vx-btn vx-btn-primary">Find path</button>
+                <button id="vx-path-clear" type="button" class="vx-btn">Clear</button>
+              </div>
+              <div id="vx-path-msg" class="vx-msg" aria-live="polite"></div>
+              <ol id="vx-path-out"></ol>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <section id="vx-overview" hidden aria-label="Overview">
+      <div class="vx-ov-head">
+        <div style="flex:1;min-width:280px">
+          <h2>Overview</h2>
+          <div id="vx-facts"></div>
+          <p id="vx-limits"></p>
+        </div>
+      </div>
+      <div class="vx-cards">
+        <div class="vx-card" id="vx-ov-states"></div>
+        <div class="vx-card" id="vx-ov-verified"></div>
+        <div class="vx-card" id="vx-ov-types"></div>
+        <div class="vx-card" id="vx-ov-findings"></div>
+      </div>
+      <div class="vx-cards">
+        <div class="vx-card" id="vx-ov-top"></div>
+        <div class="vx-card" id="vx-ov-time"></div>
+        <div class="vx-card" id="vx-ov-changes"></div>
+      </div>
+      <div class="vx-card vx-card-wide">
+        <div class="vx-table-tools">
+          <h3 class="vx-h" style="margin:0">Accounts</h3>
+          <input id="vx-ov-search" type="text" autocomplete="off" spellcheck="false" aria-label="Filter the table by handle or name">
+          <span id="vx-ov-count" class="vx-muted"></span>
+        </div>
+        <div class="vx-table-wrap">
+          <table id="vx-ov-table">
+            <thead><tr>
+              <th><button type="button" data-sort="h">Account</button></th>
+              <th><button type="button" data-sort="st">State</button></th>
+              <th class="vx-num"><button type="button" data-sort="ew">Tie weight</button></th>
+              <th class="vx-num"><button type="button" data-sort="din">In links</button></th>
+              <th class="vx-num"><button type="button" data-sort="dout">Out links</button></th>
+              <th class="vx-num"><button type="button" data-sort="fo">Followers</button></th>
+              <th class="vx-num"><button type="button" data-sort="age">Account age</button></th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div id="vx-help" hidden role="dialog" aria-modal="true" aria-labelledby="vx-help-title">
+  <div class="vx-help-box">
+    <div style="display:flex;align-items:center"><h2 id="vx-help-title">How to use this map</h2><button type="button" class="vx-close" id="vx-help-close" aria-label="Close help">&times;</button></div>
+    <h3>What you see</h3>
+    <p>Each circle is an account that interacted with the owner's account, or that the owner's account interacted with. A line is a link: a reply, a quote, a mention, or a repost. The line color shows the type. A larger circle has more or stronger ties.</p>
+    <h3>Move around</h3>
+    <ul>
+      <li>Scroll to zoom. Drag the background to move the map. Drag a node to move that node.</li>
+      <li>Hover a node to see its links and a short summary. Click a node to open its account panel.</li>
+      <li>Use the buttons at the bottom right to zoom in, zoom out, or show the whole graph.</li>
+      <li>Press <span class="vx-kbd">/</span> to search. Press <span class="vx-kbd">Esc</span> to close this guide or clear a focus.</li>
+    </ul>
+    <h3>Menus</h3>
+    <ul>
+      <li><strong>Time</strong> shows only the links with an interaction in the last 30 days, 7 days, or 48 hours of the data.</li>
+      <li><strong>Links</strong> turns each interaction type on or off.</li>
+      <li><strong>Findings</strong> lists patterns across accounts and the flagged accounts. Click one to focus the map on it.</li>
+      <li><strong>Playback</strong> replays the links in the order of their first interaction.</li>
+      <li><strong>Controls</strong> changes the display, runs a live layout, filters the map, and finds paths.</li>
+      <li><strong>Overview</strong> shows totals, charts, and a table of all accounts. Click a row to go to that account on the map.</li>
+    </ul>
+    <h3>Signal states</h3>
+    <p>A state describes signals in the data, not a person. "Not scored" means that the score stage did not score the account. "No signals seen", "Some signals", and "Many signals" count the rules that fired. The account panel shows each rule and its cause.</p>
+    <h3>Privacy</h3>
+    <p>This file is private. It describes third parties. Do not share it. The page loads nothing from the network and sends nothing out.</p>
+  </div>
+</div>
+<div id="vx-error" role="alert"></div>
+{% for name, js in vendor_scripts %}<script data-vendor="{{ name }}">
+{{ js }}
+</script>
+{% endfor %}<script type="application/octet-stream" id="vx-payload">{{ payload }}</script>
+<script>
+{{ app_js }}
+</script>
+</body>
+</html>

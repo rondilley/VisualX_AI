@@ -1,0 +1,140 @@
+{
+  "lock_version": 1,
+  "note": "Written by tools/vendor.py. Do not edit. Inline order is the order of role=inline packages.",
+  "bundler": null,
+  "packages": [
+    {
+      "name": "graphology",
+      "version": "0.26.0",
+      "license": "MIT",
+      "role": "inline",
+      "tarball": "https://registry.npmjs.org/graphology/-/graphology-0.26.0.tgz",
+      "integrity": "sha512-8SSImzgUUYC89Z042s+0r/vMibY7GX/Emz4LDO5e7jYXhuoWfHISPFJYjpRLUSJGq6UQ6xlenvX1p/hJdfXuXg==",
+      "files": [
+        {
+          "src": "package/dist/graphology.umd.min.js",
+          "dest": "graphology.umd.min.js",
+          "sha256": "dc337efa23903f61e064c8e7e7f93a429e6855dccfc2458802b4ed30c621c087",
+          "bytes": 73629
+        },
+        {
+          "src": "package/LICENSE.txt",
+          "dest": "licenses/graphology.LICENSE.txt",
+          "sha256": "9d396b4882c329077f32861c0d6822dcee48f2d0ff6196d8459af70844196275",
+          "bytes": 1104
+        }
+      ],
+      "global": "graphology"
+    },
+    {
+      "name": "sigma",
+      "version": "4.0.4",
+      "license": "MIT",
+      "role": "inline",
+      "tarball": "https://registry.npmjs.org/sigma/-/sigma-4.0.4.tgz",
+      "integrity": "sha512-qVZJ0WHhtOngpIpai7xfopkiTkwb92+Cl7zqcJBJos5juwH6FnkUfOM08mjgZ6Urd5WUAIsSbYNY41SL7BydYw==",
+      "files": [
+        {
+          "src": "package/dist/sigma.min.js",
+          "dest": "sigma.min.js",
+          "sha256": "85fa00f99cccbe6d80aaf16eee21dd42c2aaf3f8b02bb21a81b986649ce27416",
+          "bytes": 393053
+        },
+        {
+          "src": "package/LICENSE.txt",
+          "dest": "licenses/sigma.LICENSE.txt",
+          "sha256": "7036bbeb954c1220102cced5a608198a54f4a19b2d81d96f67997dbb9d7a51f1",
+          "bytes": 1121
+        }
+      ],
+      "global": "Sigma"
+    },
+    {
+      "name": "graphology-library",
+      "version": "0.8.0",
+      "license": "MIT",
+      "role": "inline",
+      "tarball": "https://registry.npmjs.org/graphology-library/-/graphology-library-0.8.0.tgz",
+      "integrity": "sha512-mIzyL2AxUOAi+Q6pr8/xyadMCzCZ8bTZhcGYKR4gk+QIBZQqwiE1gAfCjCSqMj5q7kyBbdCVjrPHi6kAXvu0dw==",
+      "files": [
+        {
+          "src": "package/dist/graphology-library.min.js",
+          "dest": "graphology-library.min.js",
+          "sha256": "5323729ec6d4ac5d98a245873646c27fd80c7234df13972faec5869f3c54a105",
+          "bytes": 168452
+        },
+        {
+          "src": "package/LICENSE.txt",
+          "dest": "licenses/graphology-library.LICENSE.txt",
+          "sha256": "597c30078622c20d8e62f9d96b4d2b9f9013b9668b778a55eb00810d093cd08c",
+          "bytes": 1104
+        }
+      ],
+      "global": "graphologyLibrary"
+    },
+    {
+      "name": "events",
+      "version": "3.3.0",
+      "license": "MIT",
+      "role": "notice",
+      "tarball": "https://registry.npmjs.org/events/-/events-3.3.0.tgz",
+      "integrity": "sha512-mQw+2fkQbALzQ7V0MY0IqdnXNOeTtP4r0lN9z7AAawCXgqea7bDii20AYrIBrFd/Hx0M2Ocz6S111CaFkUcb0Q==",
+      "files": [
+        {
+          "src": "package/LICENSE",
+          "dest": "licenses/events.LICENSE.txt",
+          "sha256": "631987b7616a325a5b97566c232418481ddf7dbb5ecadefb991e791876cc2599",
+          "bytes": 1081
+        }
+      ]
+    },
+    {
+      "name": "graphology-utils",
+      "version": "2.5.2",
+      "license": "MIT",
+      "role": "notice",
+      "tarball": "https://registry.npmjs.org/graphology-utils/-/graphology-utils-2.5.2.tgz",
+      "integrity": "sha512-ckHg8MXrXJkOARk56ZaSCM1g1Wihe2d6iTmz1enGOz4W/l831MBCKSayeFQfowgF8wd+PQ4rlch/56Vs/VZLDQ==",
+      "files": [
+        {
+          "src": "package/LICENSE.txt",
+          "dest": "licenses/graphology-utils.LICENSE.txt",
+          "sha256": "597c30078622c20d8e62f9d96b4d2b9f9013b9668b778a55eb00810d093cd08c",
+          "bytes": 1104
+        }
+      ]
+    },
+    {
+      "name": "mnemonist",
+      "version": "0.39.8",
+      "license": "MIT",
+      "role": "notice",
+      "tarball": "https://registry.npmjs.org/mnemonist/-/mnemonist-0.39.8.tgz",
+      "integrity": "sha512-vyWo2K3fjrUw8YeeZ1zF0fy6Mu59RHokURlld8ymdUPjMlD9EC9ov1/YPqTgqRvUN9nTr3Gqfz29LYAmu0PHPQ==",
+      "files": [
+        {
+          "src": "package/LICENSE.txt",
+          "dest": "licenses/mnemonist.LICENSE.txt",
+          "sha256": "dfa5b838b877406f163d57ed736fd6d7f99ed442dfde2152c11d7b34dff3dd81",
+          "bytes": 1099
+        }
+      ]
+    },
+    {
+      "name": "obliterator",
+      "version": "2.0.4",
+      "license": "MIT",
+      "role": "notice",
+      "tarball": "https://registry.npmjs.org/obliterator/-/obliterator-2.0.4.tgz",
+      "integrity": "sha512-lgHwxlxV1qIg1Eap7LgIeoBWIMFibOjbrYPIPJZcI1mmGAI2m3lNYpK12Y+GBdPQ0U1hRwSord7GIaawz962qQ==",
+      "files": [
+        {
+          "src": "package/LICENSE.txt",
+          "dest": "licenses/obliterator.LICENSE.txt",
+          "sha256": "597c30078622c20d8e62f9d96b4d2b9f9013b9668b778a55eb00810d093cd08c",
+          "bytes": 1104
+        }
+      ]
+    }
+  ]
+}

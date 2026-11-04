@@ -1,0 +1,427 @@
+# Signal rules for v0.1 and v0.2 (ARCHITECTURE AD-08, FR-32, FR-36, FR-56, MR-03).
+#
+# Each rule names a signal function in src/visualx/score/signals.py. A change to
+# a threshold, a keyword, a domain, the points, or a band is a change to this
+# file only. A new signal type is a code change.
+#
+# Keys of a rule:
+#   id        rule ID from research section 5, 6.2
+#   family    gate | profile | trust | behavior | impersonation
+#   signal    name of the signal function
+#   when      condition on the signal value: lt, lte, gt, gte, eq, ne, in
+#   points    points when the rule fires (gate rules have no points)
+#   escalate  optional {when, points, signal}: replacement points
+#   hard      optional; true gives many_signals (behavior or impersonation only)
+#   cause     cause template; {value} and the signal fields are available
+#   params    thresholds and lists for the signal function
+#
+# Policy controls (checked when the engine loads this file):
+#   - every rule has a family (TR-06)
+#   - no rule and no pattern detector uses a sensitive-category field or keyword (TR-06)
+#   - no cause template contains the words in FR-31
+#   - only behavior and impersonation rules can give many_signals (FR-35)
+#
+# The thresholds are engineering decisions from research section 5, 6.1 and
+# 6.2. The v0.2 calibration will set them again.
+
+bands:
+  some_signals_min: 3
+  many_signals_min: 6
+  many_signals_families: [behavior, impersonation]
+  # One fact counts one time. P01, B08, B09, and B10 all fire on new accounts: a new
+  # account in a reply burst got 3 + 1 + 2 = 6 points (many_signals) from its age alone
+  # (held-out background, 2026-11-03). Their sum counts up to max_points only, so the
+  # state needs one more independent signal to reach many_signals.
+  overlap:
+    account_age:
+      rules: [P01, B08, B09, B10]
+      max_points: 5
+  # many_signals also needs 2 points from behavior or impersonation rules. An overlap
+  # group adds only its largest such rule. Without this, profile points and one 1-point
+  # behavior rule (B08) gave many_signals (held-out background, 2026-11-03). FR-35 says
+  # that profile rules alone do not give many_signals. The value 2 came from the tune
+  # seeds: 3 removed most planted campaign members from many_signals.
+  many_signals_min_family_points: 2
+
+rules:
+  - id: N01
+    family: gate
+    signal: profile_data_missing
+    when: {eq: true}
+    cause: "Profile data not available"
+
+  - id: N02
+    family: gate
+    signal: protected_or_unavailable
+    when: {eq: true}
+    cause: "Account is protected or not available"
+
+  - id: N03
+    family: gate
+    signal: known_account
+    when: {eq: true}
+    cause: "Account is you or is on your allowlist"
+
+  - id: P01
+    family: profile
+    signal: account_age_days_at_first_interaction
+    when: {lt: 30}
+    points: 2
+    escalate: {when: {lt: 7}, points: 3}
+    cause: "Account created {value} days before first interaction"
+
+  - id: P03
+    family: profile
+    signal: empty_profile
+    when: {eq: true}
+    points: 1
+    cause: "Bio, URL, and location are empty"
+
+  - id: P05
+    family: profile
+    signal: low_followers_high_following
+    when: {eq: true}
+    points: 2
+    params:
+      followers_below: 10
+      following_at_least: 200
+    cause: "{followers} followers, {following} following"
+
+  - id: P06
+    family: profile
+    signal: lifetime_posts_per_day
+    when: {gt: 144}
+    points: 2
+    cause: "Average of {value} posts each day"
+
+  - id: P07
+    family: profile
+    signal: no_social_graph
+    when: {eq: true}
+    points: 1
+    cause: "No followers and follows no accounts"
+
+  - id: T01
+    family: trust
+    signal: verified_type
+    when: {in: [business, government]}
+    points: -2
+    cause: "Organization or government verification"
+
+  - id: T02
+    family: trust
+    signal: established_account
+    when: {eq: true}
+    points: -2
+    params:
+      min_age_days: 730
+      min_followers: 1000
+      min_listed: 10
+    cause: "Account is {years} years old and is on {listed} lists"
+
+  - id: T03
+    family: trust
+    signal: ego_replied_or_quoted
+    when: {gte: 1}
+    points: -3
+    cause: "You interacted with this account"
+
+  - id: B01
+    family: behavior
+    signal: max_duplicate_replies
+    when: {gte: 3}
+    points: 3
+    params:
+      jaccard: 0.9
+      shingle_words: 3
+    cause: "Sent {value} near-identical replies"
+
+  - id: B03
+    family: behavior
+    signal: max_replies_to_ego_in_window
+    when: {gte: 10}
+    points: 2
+    params:
+      window_minutes: 60
+    cause: "{value} replies to you in {window_minutes} minutes"
+
+  - id: B04
+    family: behavior
+    signal: scam_phrase
+    when: {eq: true}
+    points: 2
+    params:
+      phrases:
+        - airdrop
+        - giveaway
+        - dm me
+        - recover your funds
+        - recover your account
+        - wallet
+        - investment manager
+        - seed phrase
+        - claim your reward
+        - guaranteed profit
+    cause: "Reply or bio contains scam phrase '{phrase}'"
+
+  - id: B05
+    family: behavior
+    signal: messenger_or_shortener_link
+    when: {eq: true}
+    points: 1
+    # +2 if the account does not follow you. v0.1 does not collect follows, so
+    # the engine keeps +1 and records a rule_skips row for follows_ego.
+    escalate: {signal: account_follows_ego, when: {eq: false}, points: 2}
+    params:
+      domains:
+        - t.me
+        - telegram.me
+        - wa.me
+        - bit.ly
+        - tinyurl.com
+        - is.gd
+        - cutt.ly
+        - rebrand.ly
+        - shorturl.at
+        - ow.ly
+        - rb.gy
+        - tiny.cc
+    cause: "Links to {domain}"
+
+  - id: B06
+    family: behavior
+    signal: threat_feed_domain
+    when: {eq: true}
+    points: 6
+    hard: true
+    # FR-56: a local list of known-bad domains that the owner selects. Put one host
+    # name on each line of config/threat_domains.txt (hosts-file and URL lines also
+    # work). Record the terms of use of the feed in feed_terms. With no file, the rule
+    # has no input. Only links in posts count, not the profile (FR-35).
+    params:
+      feed_file: threat_domains.txt
+      feed_name: "owner threat feed"
+      feed_terms: ""
+      max_domains: 500000
+    cause: "Links to {domain}, a domain on the list {feed_name}"
+
+  - id: B07
+    family: behavior
+    signal: ai_authorship_phrase
+    when: {eq: true}
+    points: 3
+    params:
+      phrases:
+        - as an ai language model
+        - as a large language model
+        - as an ai developed by
+        - i cannot fulfill that request
+        - i cannot fulfill this request
+        - my knowledge cutoff
+        - regenerate response
+    cause: "Text contains phrase '{phrase}'"
+
+  - id: I01
+    family: impersonation
+    signal: impersonates_ego
+    when: {eq: true}
+    points: 6
+    hard: true
+    params:
+      max_handle_edit_distance: 2
+    cause: "Name looks like your account @{ego_handle}"
+
+  # -- v0.2 starter rules (FR-56) ---------------------------------------------
+  # B06 (known-bad domain from a threat feed) is not in this file: FR-56 needs a
+  # feed with recorded terms and a size limit, and no such feed is chosen yet.
+
+  - id: P02
+    family: profile
+    signal: default_profile_image
+    when: {eq: true}
+    points: 1
+    params:
+      marker: default_profile_images
+    cause: "Account uses the default profile image"
+
+  - id: P04
+    family: profile
+    signal: generated_handle
+    when: {eq: true}
+    points: 1
+    params:
+      min_digits: 6
+    cause: "Handle ends in {digits} digits"
+
+  - id: B02
+    family: behavior
+    signal: shared_text_or_link
+    when: {eq: true}
+    points: 3
+    # The groups come from patterns.detectors.shared_content (3 or more accounts).
+    cause: "Same {kind} as {others} other accounts"
+
+  - id: B08
+    family: behavior
+    signal: new_account_on_high_reach_post
+    when: {eq: true}
+    points: 1
+    params:
+      top_fraction: 0.1
+      min_posts: 10
+      max_age_days: 30
+    cause: "New account ({age_days} days old) replied to a high-reach post"
+
+  - id: I02
+    family: impersonation
+    signal: impersonates_known
+    when: {eq: true}
+    points: 4
+    # Known accounts: config/allowlist.yaml and the top contacts (patterns.top_contacts).
+    params:
+      min_handle_length: 5
+      long_handle_min_length: 9
+      max_handle_edit_distance: 2
+      min_name_key_length: 8
+      young_account_days: 365
+    cause: "Name looks like @{known}"
+
+  - id: I03
+    family: impersonation
+    signal: mixed_script_name_or_hashtag
+    when: {eq: true}
+    points: 2
+    cause: "{where} mixes {scripts} letters in one word"
+
+  # -- coordination rules from the pattern layer --------------------------------
+  # An account gets these rules when it is a member of a finding at or above
+  # patterns.member_rule_min_severity.
+
+  - id: B09
+    family: behavior
+    signal: in_reply_burst
+    when: {eq: true}
+    points: 2
+    cause: "One of {accounts} accounts that contacted you within {minutes} minutes"
+
+  - id: B10
+    family: behavior
+    signal: in_creation_cluster
+    when: {eq: true}
+    points: 2
+    cause: "One of {accounts} accounts created within {hours} hours of each other"
+
+  - id: B11
+    family: behavior
+    signal: fast_reply_timing
+    when: {eq: true}
+    points: 2
+    cause: "Replies a median of {seconds} seconds after your post ({replies} replies)"
+
+  - id: B12
+    family: behavior
+    signal: shared_link_domain
+    when: {eq: true}
+    points: 1
+    cause: "Linked to the same site as {others} other accounts in a short time"
+
+  - id: B13
+    family: behavior
+    signal: in_co_action
+    when: {eq: true}
+    points: 2
+    cause: "Acted on {posts} of the same posts as other accounts within {minutes} minutes ({accounts} accounts)"
+
+  - id: B14
+    family: behavior
+    signal: mass_tagging
+    when: {eq: true}
+    points: 2
+    cause: "Tagged {tagged} accounts with almost no link to each other in {posts} posts"
+
+  - id: I04
+    family: impersonation
+    signal: renamed_toward_known
+    when: {eq: true}
+    points: 4
+    cause: "Changed its {changed} to look like @{known}"
+
+# Network-level pattern detectors (src/visualx/score/patterns.py). Each detector
+# writes rows to the table "findings". The docstring of each detector function
+# gives the reason for each default. A key that is not here takes the default
+# in the code. The labeled benchmark in tests/validation measures each
+# detector (tools/validate_detectors.py, background/2026-11-03_detector_validation.md).
+patterns:
+  member_rule_min_severity: notable
+  top_contacts:
+    count: 10
+    require_owner_interaction: true
+  detectors:
+    reply_burst:
+      min_accounts: 4
+      window_minutes: 15
+      young_account_days: 180
+      max_p: 0.05
+      min_base_accounts: 30
+      min_young_accounts: 3
+      reach_neighbors: 20
+      base_days: 14
+    creation_cluster:
+      min_accounts: 3
+      window_hours: 72
+      lookback_days: 1095
+      max_p: 0.05
+      young_account_days: 90
+      local_days: 90
+      short_local_days: 15
+    fast_reply:
+      min_replies: 3
+      max_median_seconds: 60
+      high_median_seconds: 15
+      only_original_posts: true
+    shared_content:
+      min_accounts: 3
+      min_text_chars: 40
+      domain_window_days: 7
+      common_site_accounts: 2
+      ignore_domains: []
+    lookalike:
+      min_handle_length: 5
+      long_handle_min_length: 9
+      max_handle_edit_distance: 2
+      min_name_key_length: 8
+      young_account_days: 365
+    profile_outliers:
+      min_accounts: 20
+      z: 3.5
+      max_findings: 10
+    one_way:
+      min_inbound: 5
+      min_posts: 3
+    tight_group:
+      min_size: 3
+      max_findings: 10
+    # Detectors in src/visualx/score/network.py.
+    co_action:
+      window_minutes: 10
+      min_sync: 3
+      max_p: 0.01
+      min_q: 0.002
+      max_actors: 300
+      max_findings: 20
+    profile_change:
+      churn_min: 3
+    mass_tagging:
+      min_fanout: 4
+      min_posts: 3
+      min_tagged: 10
+      max_retag_share: 0.5
+      max_linked_share: 0.2
+    community_anomaly:
+      min_size: 8
+      window_days: 30
+      min_in_window: 4
+      local_days: 180
+      max_p: 0.01
+      random_seed: 7
+      max_findings: 10

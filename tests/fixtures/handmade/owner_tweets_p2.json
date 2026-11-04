@@ -1,0 +1,47 @@
+{
+  "data": [
+    {
+      "id": "3003",
+      "author_id": "1000",
+      "created_at": "2026-10-10T08:00:00.000Z",
+      "conversation_id": "3003",
+      "referenced_tweets": [{"type": "retweeted", "id": "9002"}],
+      "text": "RT @carol: hello to @dave and everyone",
+      "entities": {
+        "mentions": [
+          {"start": 3, "end": 9, "username": "carol", "id": "2003"},
+          {"start": 20, "end": 25, "username": "dave", "id": "2004"}
+        ]
+      },
+      "public_metrics": {"retweet_count": 5, "reply_count": 0, "like_count": 0, "quote_count": 2, "bookmark_count": 0, "impression_count": 0}
+    },
+    {
+      "id": "3004",
+      "author_id": "1000",
+      "created_at": "2026-10-05T11:00:00.000Z",
+      "conversation_id": "3004",
+      "referenced_tweets": [{"type": "quoted", "id": "9003"}],
+      "text": "Look at this @dave @erin https://t.co/q",
+      "entities": {
+        "mentions": [
+          {"start": 13, "end": 18, "username": "dave", "id": "2004"},
+          {"start": 19, "end": 24, "username": "erin", "id": "2005"}
+        ],
+        "urls": [{"start": 25, "end": 39, "url": "https://t.co/q", "expanded_url": "https://x.com/dave/status/9003"}]
+      },
+      "public_metrics": {"retweet_count": 0, "reply_count": 0, "like_count": 3, "quote_count": 0, "bookmark_count": 0, "impression_count": 90}
+    }
+  ],
+  "includes": {
+    "users": [
+      {"id": "2003", "username": "carol", "name": "Carol", "created_at": "2012-07-07T00:00:00.000Z", "protected": false, "verified_type": "none", "public_metrics": {"followers_count": 1500, "following_count": 100, "tweet_count": 9000, "listed_count": 40}},
+      {"id": "2004", "username": "dave", "name": "Dave", "created_at": "2020-02-02T00:00:00.000Z", "protected": false, "public_metrics": {"followers_count": 10, "following_count": 10, "tweet_count": 10, "listed_count": 0}},
+      {"id": "2005", "username": "erin", "name": "Erin", "created_at": "2019-09-09T00:00:00.000Z", "protected": false, "verified_type": "none", "public_metrics": {"followers_count": 75, "following_count": 75, "tweet_count": 500, "listed_count": 1}}
+    ],
+    "tweets": [
+      {"id": "9002", "author_id": "2003", "created_at": "2026-10-10T07:00:00.000Z", "text": "hello to @dave and everyone"},
+      {"id": "9003", "author_id": "2004", "created_at": "2026-10-05T10:00:00.000Z", "text": "A chart"}
+    ]
+  },
+  "meta": {"result_count": 2, "newest_id": "3003", "oldest_id": "3004"}
+}

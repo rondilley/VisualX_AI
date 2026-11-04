@@ -1,0 +1,50 @@
+{
+  "data": [
+    {
+      "id": "6003",
+      "author_id": "2002",
+      "created_at": "2026-10-28T09:00:00.000Z",
+      "conversation_id": "6003",
+      "referenced_tweets": [{"type": "quoted", "id": "9004"}],
+      "text": "Good thread from erin",
+      "entities": {},
+      "public_metrics": {"retweet_count": 0, "reply_count": 0, "like_count": 2, "quote_count": 0, "bookmark_count": 0, "impression_count": 40}
+    },
+    {
+      "id": "6002",
+      "author_id": "2002",
+      "created_at": "2026-10-25T09:00:00.000Z",
+      "conversation_id": "6002",
+      "text": "@alice @zed look at this",
+      "entities": {
+        "mentions": [
+          {"start": 0, "end": 6, "username": "alice", "id": "2001"},
+          {"start": 7, "end": 11, "username": "zed", "id": "2009"}
+        ]
+      },
+      "public_metrics": {"retweet_count": 0, "reply_count": 0, "like_count": 0, "quote_count": 0, "bookmark_count": 0, "impression_count": 12}
+    },
+    {
+      "id": "6001",
+      "author_id": "2002",
+      "created_at": "2026-10-11T09:00:00.000Z",
+      "conversation_id": "9002",
+      "in_reply_to_user_id": "2003",
+      "referenced_tweets": [{"type": "replied_to", "id": "9002"}],
+      "text": "@carol hello back",
+      "entities": {"mentions": [{"start": 0, "end": 6, "username": "carol", "id": "2003"}]},
+      "public_metrics": {"retweet_count": 0, "reply_count": 0, "like_count": 1, "quote_count": 0, "bookmark_count": 0, "impression_count": 9}
+    }
+  ],
+  "includes": {
+    "users": [
+      {"id": "2002", "username": "bob", "name": "Bob", "created_at": "2018-03-03T00:00:00.000Z", "description": "", "protected": false, "verified_type": "blue", "public_metrics": {"followers_count": 50, "following_count": 900, "tweet_count": 400, "listed_count": 0}},
+      {"id": "2009", "username": "zed", "name": "Zed", "created_at": "2022-08-08T00:00:00.000Z", "description": "", "protected": false, "verified_type": "none", "public_metrics": {"followers_count": 30, "following_count": 30, "tweet_count": 300, "listed_count": 0}}
+    ],
+    "tweets": [
+      {"id": "9004", "author_id": "2005", "created_at": "2026-10-27T09:00:00.000Z", "text": "A thread"},
+      {"id": "9002", "author_id": "2003", "created_at": "2026-10-10T07:00:00.000Z", "text": "hello to @dave and everyone"}
+    ]
+  },
+  "meta": {"result_count": 3, "newest_id": "6003", "oldest_id": "6001", "next_token": "s2002p2"}
+}

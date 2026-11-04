@@ -1,0 +1,4 @@
+# Accounts the owner knows (rule N03 gives not_scored). Copy to config/allowlist.yaml (gitignored).
+allowlist:
+  - user_id: "1234567890"
+    note: "Example entry"

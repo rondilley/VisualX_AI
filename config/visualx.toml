@@ -1,0 +1,97 @@
+# VisualX_AI configuration. Copy keys to config/visualx.local.toml to override them
+# without a change to this file. The local file is not in version control.
+
+[data]
+dir = "data"                    # store.sqlite, cache/, renders/, runs/ (DR-07, gitignored)
+cache_retention_days = 30       # DR-10
+retain_text = true              # AD-11. false = drop post text after score, keep hashes and URL domains
+
+[owner]
+handle = "Ron_Dilley"            # the collector stops if the signed-in account is a different one (FR-54)
+# X OAuth 2.0 client ID of the owner's developer app (public client, PKCE).
+# The client ID is not a secret. Tokens go only to the Windows Credential Manager.
+client_id = ""
+redirect_port = 8765            # must match the callback URL in the X app: http://127.0.0.1:8765/callback
+scopes = ["tweet.read", "users.read", "offline.access"]
+
+[collect]
+window_days = 90
+cap_usd = 5.00                  # run spend cap (FR-14). Also set a spend limit in the X Console.
+page_size = 100
+mention_limit = 800             # IR-02: the mentions endpoint returns at most 800 posts
+owner_post_limit = 3200
+# FR-07 seed accounts (step 6): also read the recent posts of the owner's top N contacts by tie
+# weight, so that links between those contacts go into the map. 0 = off. CLI: --seeds N.
+# Maximum cost of step 6: seeds x seed_pages x page_size x prices.post_read (40 seeds: $20.00).
+seeds = 0
+seed_window_days = 30           # seed posts from the later of the window start and this many days ago
+seed_pages = 1                  # pages of up to page_size posts for each seed
+
+[prices]                        # USD per resource (FR-16). X can change these without notice [V1-R1].
+post_read = 0.005
+user_read = 0.010
+owned_read = 0.001
+
+[billing_assumptions]           # Not verified until the Slice 0 probe (FR-12). Shown in each estimate.
+expansions_billed = false       # OQ-01: X does not bill the objects in "includes"
+owned_reads_with_user_token = true  # OQ-02: owner posts and mentions bill at the owned-read price
+
+[weights]                       # AD-06 start values from x-network-map [V2-R8]. Heuristics, not published values.
+reply = 3.0
+quote = 2.0
+mention = 1.5
+repost = 1.0
+reciprocity_factor = 1.5        # engineering default; v0.2 calibration can change it
+# FR-20 recency decay. Each timed interaction counts 0.5 ** (age / half_life_days), with the age
+# measured from the newest interaction in the store. 0 = off (each interaction counts 1).
+# An interaction with no time (a repost from retweeted_by) always counts 1 (DR-02).
+half_life_days = 0
+
+[analyze]
+random_seed = 42
+layout_iterations = 500
+
+[analyze.groups]                # FR-26 to FR-28, FR-30. Topics: config/topics.yaml.
+resolution = 1.0                # Leiden RB configuration resolution. Higher = more, smaller groups.
+runs = 20                       # random seeds for Leiden (20 or more, TSC-11)
+random_seed = 42                # first random seed; run k uses random_seed + k
+min_community_size = 3          # a smaller group gets no community number
+hub_top_share = 0.02            # hubs: this share of accounts with the most links (owner removed)
+hub_min_degree = 5
+bridge_top_share = 0.02         # bridges: this share with the highest betweenness (owner removed)
+bridge_min_communities = 2      # or links into this many other communities
+bridge_min_links = 2            # with at least this many links into each one
+topic_min_share = 0.5           # label propagation: share of the labeled link weight
+topic_min_neighbors = 2         # labeled neighbors with the topic
+topic_rounds = 5
+
+[render]
+core_view_max_nodes = 2000      # FR-48: start in a core view above this node count
+size_mode = "weighted_degree"   # or "followers"
+min_tie_weight = 0.0            # FR-23 default filter value
+
+[render.state_colors]           # Okabe-Ito hues on a dark background
+not_scored = "#8C8C8C"
+no_signals = "#009E73"
+some_signals = "#E69F00"
+many_signals = "#D55E00"
+
+[render.state_shapes]           # FR-50: text mark next to the color (ASCII)
+not_scored = "?"
+no_signals = "-"
+some_signals = "!"
+many_signals = "!!"
+
+[render.edge_colors]
+reply = "#56B4E9"
+quote = "#CC79A7"
+mention = "#F0E442"
+repost = "#0072B2"
+
+[grok]                          # FR-09 second source: xAI x_search (collect --source grok). Not the default.
+model = "grok-4.7"              # the model in every xAI x_search example (docs.x.ai, 2026-11-02)
+input_per_million = 2.00        # USD per 1M input tokens for grok-4.7 (<200k prompt)
+output_per_million = 6.00       # USD per 1M output tokens
+max_turns = 3                   # agentic turns per request (xAI max_turns)
+chunk_days = 7                  # one inbound and one outbound request per window of this many days
+reserve_per_request_usd = 1.00  # cap guard reservation; xAI has no per-request fetch cap

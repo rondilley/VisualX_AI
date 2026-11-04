@@ -1,0 +1,19 @@
+{
+  "data": [
+    {
+      "id": "6010",
+      "author_id": "2002",
+      "created_at": "2026-11-01T09:00:00.000Z",
+      "conversation_id": "6010",
+      "text": "@erin agreed",
+      "entities": {"mentions": [{"start": 0, "end": 5, "username": "erin", "id": "2005"}]},
+      "public_metrics": {"retweet_count": 0, "reply_count": 0, "like_count": 0, "quote_count": 0, "bookmark_count": 0, "impression_count": 4}
+    }
+  ],
+  "includes": {
+    "users": [
+      {"id": "2005", "username": "erin", "name": "Erin", "created_at": "2019-09-09T00:00:00.000Z", "protected": false, "verified_type": "none", "public_metrics": {"followers_count": 75, "following_count": 75, "tweet_count": 500, "listed_count": 1}}
+    ]
+  },
+  "meta": {"result_count": 1, "newest_id": "6010", "oldest_id": "6010"}
+}

@@ -1,0 +1,7 @@
+# Owner overrides (FR-37). Copy to config/overrides.yaml (gitignored).
+# state: not_scored | no_signals | some_signals | many_signals
+overrides:
+  - user_id: "1234567890"
+    state: no_signals
+    note: "Known colleague; new account after a move"
+    date: "2026-11-02"

@@ -1,0 +1,44 @@
+{
+  "data": [
+    {
+      "id": "3001",
+      "author_id": "1000",
+      "created_at": "2026-10-20T09:00:00.000Z",
+      "conversation_id": "3001",
+      "text": "New write-up on network maps https://t.co/abc with thanks to @alice",
+      "entities": {
+        "mentions": [{"start": 60, "end": 66, "username": "alice", "id": "2001"}],
+        "urls": [{"start": 30, "end": 53, "url": "https://t.co/abc", "expanded_url": "https://example.org/post"}]
+      },
+      "public_metrics": {"retweet_count": 2, "reply_count": 1, "like_count": 10, "quote_count": 1, "bookmark_count": 0, "impression_count": 400}
+    },
+    {
+      "id": "3002",
+      "author_id": "1000",
+      "created_at": "2026-10-18T15:30:00.000Z",
+      "conversation_id": "9001",
+      "in_reply_to_user_id": "2002",
+      "referenced_tweets": [{"type": "replied_to", "id": "9001"}],
+      "text": "@bob @carol thanks, good point",
+      "entities": {
+        "mentions": [
+          {"start": 0, "end": 4, "username": "bob", "id": "2002"},
+          {"start": 5, "end": 11, "username": "carol", "id": "2003"}
+        ]
+      },
+      "public_metrics": {"retweet_count": 0, "reply_count": 0, "like_count": 1, "quote_count": 0, "bookmark_count": 0, "impression_count": 30}
+    }
+  ],
+  "includes": {
+    "users": [
+      {"id": "1000", "username": "owner", "name": "Owner Account", "created_at": "2010-05-01T10:00:00.000Z", "protected": false, "verified_type": "none", "public_metrics": {"followers_count": 5000, "following_count": 300, "tweet_count": 12000, "listed_count": 80}},
+      {"id": "2001", "username": "alice", "name": "Alice", "created_at": "2015-01-01T00:00:00.000Z", "description": "Researcher", "protected": false, "verified_type": "none", "public_metrics": {"followers_count": 800, "following_count": 200, "tweet_count": 3000, "listed_count": 12}},
+      {"id": "2002", "username": "bob", "name": "Bob", "created_at": "2018-03-03T00:00:00.000Z", "description": "", "protected": false, "verified_type": "blue", "public_metrics": {"followers_count": 50, "following_count": 900, "tweet_count": 400, "listed_count": 0}},
+      {"id": "2003", "username": "carol", "name": "Carol", "created_at": "2012-07-07T00:00:00.000Z", "protected": false, "verified_type": "none", "public_metrics": {"followers_count": 1500, "following_count": 100, "tweet_count": 9000, "listed_count": 40}}
+    ],
+    "tweets": [
+      {"id": "9001", "author_id": "2002", "created_at": "2026-10-18T14:00:00.000Z", "text": "Is this a good idea?"}
+    ]
+  },
+  "meta": {"result_count": 2, "newest_id": "3001", "oldest_id": "3002", "next_token": "p2token"}
+}
